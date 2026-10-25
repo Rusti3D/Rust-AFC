@@ -1,0 +1,33 @@
+# fake_moonraker
+# btmin_unload's flow on the BoxTurtle with its espoolers and LEDs (configs/
+# boxturtle_nobuf_flow.cfg): the N20 motors assist the prep load, the tool
+# load and the unload (PWM forward/reverse, enable, brake) while the LEDs
+# follow the lanes' states, then the LED switches (TURN_OFF/ON_AFC_LED, SET_LED), the
+# espooler commands (SET_ESPOOLER_VALUES without values: with one, AFC
+# rewrites the config files) and the AFC stats with the motors' run times
+CONFIG ../configs/boxturtle_nobuf_flow.cfg
+DICTIONARY atmega2560.dict Turtle_1=stm32h723.dict
+
+G4 P1000
+SET_KINEMATIC_POSITION X=100 Y=100 Z=10
+WAIT 6
+TEST_BUTTON PIN=^!Turtle_1:TRG1 STATE=1
+WAIT 6
+T0
+WAIT 3
+TEST_BUTTON PIN=^PK1 STATE=0
+WAIT 2
+TOOL_UNLOAD LANE=lane1
+WAIT 3
+TEST_ESPOOLER_ASSIST LANE=lane1
+SET_ESPOOLER_VALUES LANE=lane1
+TEST_ESPOOLER_ASSIST LANE=lane1
+ENABLE_ESPOOLER_ASSIST LANE=lane2
+DISABLE_ESPOOLER_ASSIST LANE=lane2
+TEST LANE=lane3
+AFC_RESET_MOTOR_TIME LANE=lane4
+TURN_OFF_AFC_LED
+SET_LED LED=AFC_Indicator RED=0.5 INDEX=2
+TURN_ON_AFC_LED
+AFC_STATS
+WAIT 2

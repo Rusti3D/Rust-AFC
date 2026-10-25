@@ -16,6 +16,10 @@ const fn module(name: &'static str, load_config: Option<kaliru::printer::LoadFn>
 const MODULES: &[PrinterModule] = &[
     module("AFC", Some(afc::load_config), None),
     module("AFC_ACE", Some(afc::ace::load_config), Some(afc::ace::load_config_prefix)),
+    module("AFC_BoxTurtle", None, Some(afc::boxturtle::load_config_prefix)),
+    module("AFC_buffer", None, Some(afc::buffer::load_config_prefix)),
+    module("AFC_NightOwl", None, Some(afc::boxturtle::load_config_prefix_night_owl)),
+    module("AFC_QuattroBox", None, Some(afc::boxturtle::load_config_prefix_quattro_box)),
     module("AFC_canvas", None, Some(afc::canvas::load_config_prefix_unit)),
     module("AFC_canvas_lane", None, Some(afc::canvas::load_config_prefix_lane)),
     module("AFC_error", Some(afc::error::load_config), None),
@@ -23,8 +27,10 @@ const MODULES: &[PrinterModule] = &[
     module("AFC_functions", Some(afc::functions::load_config), None),
     module("AFC_hub", None, Some(afc::hub::load_config_prefix)),
     module("AFC_lane", None, Some(afc::lane::load_config_prefix)),
+    module("AFC_led", None, Some(afc::led::load_config_prefix)),
     module("AFC_prep", Some(afc::prep::load_config), None),
     module("AFC_spool", Some(afc::spool::load_config), None),
+    module("AFC_stepper", None, Some(afc::stepper::load_config_prefix)),
 ];
 
 /// whether the native AFC runs this config (else the python AFC does)

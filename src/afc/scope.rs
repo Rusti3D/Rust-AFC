@@ -5,7 +5,25 @@ use kaliru::configfile::ConfigWrapper;
 use kaliru::error::KResult;
 
 /// The AFC modules the native AFC replaces (klippy/extras names)
-pub const NATIVE_MODULES: [&str; 11] = ["AFC", "AFC_functions", "AFC_spool", "AFC_error", "AFC_prep", "AFC_hub", "AFC_extruder", "AFC_canvas", "AFC_canvas_lane", "AFC_lane", "AFC_ACE"];
+pub const NATIVE_MODULES: [&str; 17] = [
+    "AFC",
+    "AFC_functions",
+    "AFC_spool",
+    "AFC_error",
+    "AFC_prep",
+    "AFC_hub",
+    "AFC_extruder",
+    "AFC_canvas",
+    "AFC_canvas_lane",
+    "AFC_lane",
+    "AFC_ACE",
+    "AFC_stepper",
+    "AFC_BoxTurtle",
+    "AFC_NightOwl",
+    "AFC_QuattroBox",
+    "AFC_led",
+    "AFC_buffer",
+];
 
 /// Ok(()) when every AFC section is one the native AFC ports, else why not
 pub fn native_scope(config: &ConfigWrapper) -> KResult<Result<(), String>> {
@@ -53,6 +71,9 @@ pub fn native_scope(config: &ConfigWrapper) -> KResult<Result<(), String>> {
                     if p == "buffer" || p.to_lowercase() == "virtual" {
                         return Ok(Err(format!("[{}] pin_tool_start {}", s, p)));
                     }
+                } else if opt(s, "pin_tool_end").is_some() && sections.iter().any(|x| x.starts_with("AFC_buffer ")) {
+                    // calibrating against the buffer (tool_start set to "buffer" meanwhile)
+                    return Ok(Err(format!("[{}] pin_tool_end without pin_tool_start, with a buffer", s)));
                 }
             }
             "AFC_lane" => {
@@ -76,8 +97,13 @@ pub fn native_scope(config: &ConfigWrapper) -> KResult<Result<(), String>> {
                     }
                 }
             }
+            "AFC_buffer" => {
+                if opt(s, "type").is_some_and(|t| t != "switched") {
+                    return Ok(Err(format!("[{}] type", s)));
+                }
+            }
             "AFC_canvas" | "AFC_canvas_lane" => {
-                for o in ["buffer", "selector", "step_pin", "afc_motor_rwd", "afc_motor_fwd", "afc_motor_enb", "led_index", "led_logo_index"] {
+                for o in ["buffer", "selector", "step_pin", "led_index", "led_logo_index"] {
                     if opt(s, o).is_some() {
                         return Ok(Err(format!("[{}] {}", s, o)));
                     }

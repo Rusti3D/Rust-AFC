@@ -34,6 +34,10 @@ LOG_MASKS = [
     (re.compile(rb"No build file \S*?/\.\./"), b"No build file <DIR>/../"),
     # gcode.py dump_debug: "Read %f: %r" of the reactor.monotonic() read time
     (re.compile(rb"^Read \d+\.\d+: ", re.M), b"Read <MONO>: "),
+    # AFC_stats: the wall-clock date of the last error
+    (re.compile(rb"(Last error date : )\d{4}-\d\d-\d\d \d\d:\d\d"), rb"\1<DATE>          "),
+    # filament_switch_sensor's event lines carry reactor.monotonic()
+    (re.compile(rb"^(INFO:root:Filament Sensor [^\n]*: (?:runout|insert) event detected, Time )\d+\.\d+$", re.M), rb"\1<MONO>"),
     # reactor.py get_gc_stats in the shutdown dump: when python's gc last ran
     (re.compile(rb"^INFO:root:Reactor garbage collection: \([^\n]*\)$", re.M), b"INFO:root:Reactor garbage collection: <GC>"),
     # traceback frames (kaliru writes one placeholder frame line)
@@ -56,7 +60,11 @@ TMC_RUN = re.compile(rb"(?:^INFO:root:tmc \S+: [^\n]*\n)+", re.M)
 ACE_THREAD = re.compile(rb"^(?:INFO|DEBUG):root:AFC_ACE: [^\n]*\n", re.M)
 # afcDeltaTime: wall-clock durations of AFC's loads and unloads
 AFC_TIMES = [(re.compile(rb"\(\xce\x94t:\d+\.\d+s, t:\d+\.\d+\)"), "(Δt:<SECS>s, t:<SECS>)".encode()),
-             (re.compile(rb"( (?:done|toolhead|unloaded|loaded|time)[^\n]* t:)\d+\.\d+$", re.M), rb"\1<SECS>")]
+             (re.compile(rb"( (?:done|toolhead|unloaded|loaded|time)[^\n]* t:)\d+\.\d+$", re.M), rb"\1<SECS>"),
+             # AFC_stepper do_homing_move: "(steps=N dt=<wall clock>s)"
+             (re.compile(rb"( dt=)\d+\.\d+s\)"), rb"\1<SECS>s)"),
+             # AFC_STATS: the averages of those durations (the column keeps its width)
+             (re.compile(rb"(Avg Tool (?:Load|Unload|Change) : )\d+\.\d+s( *)"), lambda m: m.group(1) + b"<SECS>s" + b" " * max(0, len(m.group(0)) - len(m.group(1)) - 7))]
 # on a shutdown AFC_ACE queues its stops for the serial thread and the process
 # exits: how many go out before it does is a race
 ACE_SHUTDOWN_BURST = re.compile(rb"(?:^INFO:root:AFC_ACE: t=\S+ (?:stop_feed_filament|stop_unwind_filament|stop_feed_assist|drying_stop) [^\n]*\n)+\Z", re.M)

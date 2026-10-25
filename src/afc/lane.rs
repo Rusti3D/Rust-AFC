@@ -5,6 +5,7 @@
 //
 // This file may be distributed under the terms of the GNU GPLv3 license.
 use super::assist::Espooler;
+use super::buffer::AfcBuffer;
 use super::canvas::CanvasLane;
 use super::codes::*;
 use super::extruder::AfcExtruder;
@@ -37,7 +38,7 @@ const ONLY_LOAD_TYPES: [&str; 4] = ["HTLF", "Claymore", "OpenAMS", "ACE"];
 const EXCLUDE_TYPES: [&str; 5] = ["HTLF", "Claymore", "OpenAMS", "ViViD", "ACE"];
 /// Names skipped when searching the config for a lane's unit section
 const INVALID_UNIT_NAMES: [&str; 8] = ["AFC_buffer", "AFC_button", "AFC_extruder", "AFC_hub", "AFC_lane", "AFC_led", "AFC_prep", "AFC_stepper"];
-const VALID_DIRECT_HUB: [&str; 2] = ["direct", "direct_load"];
+pub const VALID_DIRECT_HUB: [&str; 2] = ["direct", "direct_load"];
 const UPDATE_WEIGHT_DELAY: f64 = 10.0;
 const PREP_GUARD_WINDOW: f64 = 2.0;
 
@@ -187,6 +188,8 @@ pub struct LaneSettings {
     pub post_prep_macro: Option<String>,
     pub dist_hub_move_speed: f64,
     pub dist_hub_move_accel: f64,
+    /// which of the move speeds are python ints (inherited int defaults)
+    pub move_ints: super::MoveInts,
 }
 
 /// [AFC_lane] / [AFC_canvas_lane]
@@ -233,6 +236,7 @@ pub struct AfcLane {
     pub unit: String,
     pub hub: RefCell<Option<String>>,
     pub buffer_name: RefCell<Option<String>>,
+    buffer_obj: RefCell<Option<Rc<AfcBuffer>>>,
     pub index: i64,
     pub afc_extruder_name: RefCell<Option<String>>,
     pub standalone_lane: bool,
@@ -276,7 +280,7 @@ pub struct AfcLane {
     pub inner_diameter: f64,
     pub outer_diameter: f64,
     pub empty_spool_weight: RefCell<PyVal>,
-    pub max_motor_rpm: f64,
+    pub max_motor_rpm: PyVal,
     pub rwd_speed_multi: Cell<f64>,
     pub fwd_speed_multi: Cell<f64>,
     past_extruder_position: Cell<f64>,
@@ -295,6 +299,8 @@ pub struct AfcLane {
 
     /// The Canvas lane's part (AFC_canvas_lane)
     pub canvas: RefCell<Option<CanvasLane>>,
+    /// The lane's own stepper (AFC_stepper)
+    pub stepper: RefCell<Option<Rc<super::stepper::StepperLane>>>,
 }
 
 /// [AFC_lane <name>]
@@ -374,13 +380,26 @@ impl AfcLane {
         let prep = config.get_opt("prep")?;
         let load = config.get_opt("load")?;
         let selector = config.get_opt("selector")?;
+        // lane triggers: registered before the espooler sets up its motor
+        // pins, as python does (the first button on an mcu takes its oid);
+        // the callbacks reach the lane once it exists
+        let lane_ref: Rc<RefCell<Weak<AfcLane>>> = Rc::default();
+        if let Some(p) = &prep {
+            let l = lane_ref.clone();
+            buttons.register_buttons(&[p.as_str()], Rc::new(move |et, state| l.borrow().upgrade().map_or(Ok(()), |l| l.prep_callback(et, state != 0))))?;
+        }
+        if let Some(p) = &load {
+            let l = lane_ref.clone();
+            buttons.register_buttons(&[p.as_str()], Rc::new(move |et, state| l.borrow().upgrade().map_or(Ok(()), |l| l.load_callback(et, state != 0))))?;
+        }
         let espooler = Espooler::new(&name, config, &afc)?;
         let filament_diameter = config.getfloat("filament_diameter", 1.75, Lim::new())?;
         let filament_density = config.getfloat("filament_density", 1.24, Lim::new())?;
         let inner_diameter = config.getfloat("spool_inner_diameter", 75.0, Lim::new().min(1))?;
         let outer_diameter = config.getfloat("spool_outer_diameter", 200.0, Lim::new().min(100))?;
-        let empty_spool_weight = config.getfloat("empty_spool_weight", 190.0, Lim::new().min(1))?;
-        let max_motor_rpm = config.getfloat("assist_max_motor_rpm", 465.0, Lim::new())?;
+        // the int default stays an int, as python keeps it (190, not 190.0)
+        let empty_spool_weight = config.getfloat_value("empty_spool_weight", &kaliru::configfile::Dflt::Val(PyVal::Int(190)), &Lim::new().min(1))?.unwrap_or(PyVal::Int(190));
+        let max_motor_rpm = super::getfloat_pv(config, "assist_max_motor_rpm", PyVal::Int(465))?;
         let rwd_speed_multi = config.getfloat("rwd_speed_multiplier", 0.5, Lim::new())?;
         let fwd_speed_multi = config.getfloat("fwd_speed_multiplier", 0.5, Lim::new())?;
 
@@ -430,6 +449,7 @@ impl AfcLane {
                 unit: unit.clone(),
                 hub: RefCell::new(hub.clone()),
                 buffer_name: RefCell::new(buffer_name.clone()),
+                buffer_obj: RefCell::new(None),
                 index,
                 afc_extruder_name: RefCell::new(afc_extruder_name.clone()),
                 standalone_lane,
@@ -465,7 +485,7 @@ impl AfcLane {
                 filament_density: RefCell::new(PyVal::Float(filament_density)),
                 inner_diameter,
                 outer_diameter,
-                empty_spool_weight: RefCell::new(PyVal::Float(empty_spool_weight)),
+                empty_spool_weight: RefCell::new(empty_spool_weight),
                 max_motor_rpm,
                 rwd_speed_multi: Cell::new(rwd_speed_multi),
                 fwd_speed_multi: Cell::new(fwd_speed_multi),
@@ -481,6 +501,7 @@ impl AfcLane {
                 prep_recheck_pending: Cell::new(false),
                 last_prep_time: Cell::new(0.0),
                 canvas: RefCell::new(None),
+                stepper: RefCell::new(None),
             }
         });
         let l = lane.clone();
@@ -496,15 +517,7 @@ impl AfcLane {
             }),
         );
 
-        // lane triggers
-        if let Some(p) = &prep {
-            let l = Rc::downgrade(&lane);
-            buttons.register_buttons(&[p.as_str()], Rc::new(move |et, state| l.upgrade().map_or(Ok(()), |l| l.prep_callback(et, state != 0))))?;
-        }
-        if let Some(p) = &load {
-            let l = Rc::downgrade(&lane);
-            buttons.register_buttons(&[p.as_str()], Rc::new(move |et, state| l.upgrade().map_or(Ok(()), |l| l.load_callback(et, state != 0))))?;
-        }
+        *lane_ref.borrow_mut() = Rc::downgrade(&lane);
         let query_endstops = printer.lookup_or_load::<QueryEndstops>(config, "query_endstops")?;
         let ppins = printer.lookup::<PinsObject>("pins")?;
 
@@ -549,9 +562,12 @@ impl AfcLane {
                 lane.set_homing_endstop(&query_endstops, &ppins, &pin, HOMING_HUB)?;
             }
         }
-        if let Some(b) = &buffer_name {
-            // (no AFC_buffer in the native scope)
-            return Err(KError::config(format!("AFC: buffer {} is not native", b)));
+        if buffer_name.is_some() {
+            lane.get_buffer_object()?;
+            let pin = lane.buffer_obj().and_then(|b| b.advance_pin.clone());
+            if let Some(pin) = pin {
+                lane.set_homing_endstop(&query_endstops, &ppins, &pin, HOMING_BUFFER)?;
+            }
         }
         if afc_extruder_name.is_some() && !standalone_lane {
             lane.get_extruder_object()?;
@@ -584,7 +600,11 @@ impl AfcLane {
         )?;
 
         if fullname.contains("AFC_stepper") {
-            return Err(KError::config("AFC_stepper is not native"));
+            // its endstops go on its stepper once the MCUs are identified
+            let l = lane.clone();
+            let cfg = config.clone();
+            kaliru::events::KlippyMcuIdentify::on(&printer, move || l.get_steppers(&cfg));
+            return Ok(lane);
         }
         // Should only get this far for AFC_lane configs
         lane.get_steppers(config)?;
@@ -621,8 +641,25 @@ impl AfcLane {
         self.extruder_obj.borrow().clone()
     }
 
-    pub fn buffer_obj(&self) -> Option<Rc<super::hub::NoBuffer>> {
-        None
+    pub fn buffer_obj(&self) -> Option<Rc<AfcBuffer>> {
+        self.buffer_obj.borrow().clone()
+    }
+
+    /// _get_buffer_object: the [AFC_buffer] the lane names, loaded if need be
+    fn get_buffer_object(&self) -> KResult<()> {
+        let name = self.buffer_name.borrow().clone().unwrap_or_default();
+        let section = format!("AFC_buffer {}", name);
+        let obj = self.printer.load_object(&self.config, &section, true).ok().flatten().and_then(kaliru::printer::downcast_rc::<AfcBuffer>);
+        match obj {
+            Some(b) => {
+                *self.buffer_obj.borrow_mut() = Some(b);
+                Ok(())
+            }
+            None => Err(KError::config(format!(
+                "Error: No config found for buffer: {} in [{}]. Please make sure [AFC_buffer {}] section exists in your config",
+                name, self.fullname, name
+            ))),
+        }
     }
 
     pub fn lane_load_count(&self) -> KResult<Rc<StatVar>> {
@@ -924,9 +961,16 @@ impl AfcLane {
             extruder.lanes.borrow_mut().insert(self.name.clone(), me.clone());
             extruder.check_lanes();
         }
-        // (no buffers in the native scope)
-        if extruder.tool_start.as_deref() == Some("buffer") && self.name != extruder.name {
-            return Err(KError::config(format!(
+        // Use buffer defined in stepper and override buffers that maybe set at the UNIT or extruder levels
+        *self.buffer_obj.borrow_mut() = unit_obj.buffer_obj.borrow().clone();
+        if self.buffer_name.borrow().is_some() {
+            self.get_buffer_object()?;
+        } else if self.buffer_obj().is_none() && extruder.tool_start.as_deref() == Some("buffer") && self.name != extruder.name {
+            if let Some(b) = &extruder.buffer_name {
+                let obj = self.printer.lookup_object_opt(&format!("AFC_buffer {}", b)).and_then(kaliru::printer::downcast_rc::<AfcBuffer>);
+                *self.buffer_obj.borrow_mut() = Some(obj.ok_or_else(|| KError::Other(format!("Unknown config object 'AFC_buffer {}'", b)))?);
+            } else {
+                return Err(KError::config(format!(
                 "Error: Buffer was defined as tool_start in [AFC_extruder {}] config, but buffer variable has not been configured. Please add buffer variable to either [AFC_extruder {}], [AFC_stepper {}] or [AFC_{} {}] section in your config file",
                 extruder.name,
                 extruder.name,
@@ -934,10 +978,24 @@ impl AfcLane {
                 t.replace('_', ""),
                 unit_obj.name
             )));
+            }
+        }
+        // Valid to not have a buffer defined, check to make sure object exists before adding lane to buffer
+        if let Some(b) = self.buffer_obj().filter(|_| add_to_other_obj) {
+            b.lanes.borrow_mut().insert(self.name.clone(), me.clone());
+            // Assigning buffer name just in case stepper is using buffer defined in units/extruder config
+            *self.buffer_name.borrow_mut() = Some(b.name.clone());
         }
         {
             let u = &unit_obj.settings;
             let mut s = self.settings.borrow_mut();
+            // a speed the lane leaves unset is the unit's value, int or float
+            s.move_ints = super::MoveInts {
+                long_speed: s.long_moves_speed.is_none() && u.move_ints.long_speed,
+                long_accel: s.long_moves_accel.is_none() && u.move_ints.long_accel,
+                short_speed: s.short_moves_speed.is_none() && u.move_ints.short_speed,
+                short_accel: s.short_moves_accel.is_none() && u.move_ints.short_accel,
+            };
             macro_rules! inherit {
                 ($($f:ident),*) => {$( if s.$f.is_none() { s.$f = Some(u.$f.clone()); } )*};
             }
@@ -973,7 +1031,7 @@ impl AfcLane {
                 *self.td1_device_id.borrow_mut() = u.td1_device_id.clone();
             }
             if s.td1_bowden_length.is_none() && !self.is_direct_hub() {
-                s.td1_bowden_length = self.hub_obj_opt().map(|h| h.td1_bowden_length);
+                s.td1_bowden_length = self.hub_obj_opt().map(|h| h.td1_bowden_length.get());
             }
             let f = s.rev_long_moves_speed_factor.unwrap_or(0.0);
             if f < 0.5 {
@@ -1033,6 +1091,9 @@ impl AfcLane {
             if config.get_opt("step_pin")?.is_none_or(|s| s.is_empty()) {
                 self.only_lane.set(true);
                 // (no unit in the native scope has a drive stepper)
+            } else {
+                // drive_stepper is the lane itself (AFC_stepper)
+                return super::stepper::add_lane_endstops(self);
             }
             // drive_stepper is the lane itself: its endstops go on its
             // extruder_stepper, which a lane without a stepper does not have
@@ -1101,6 +1162,31 @@ impl AfcLane {
         }
     }
 
+    /// get_speed_accel's (speed, accel) as python numbers: ints where they
+    /// are still AFC's int defaults
+    pub fn get_speed_accel_pv(&self, mode: SpeedMode) -> (PyVal, PyVal) {
+        let (speed, accel) = self.get_speed_accel(mode);
+        let s = self.settings();
+        let mi = s.move_ints;
+        let (si, ai) = if self.afc.get_quiet_mode() {
+            (self.afc.quiet_moves_int.get(), mi.short_accel)
+        } else {
+            match mode {
+                SpeedMode::Long => (mi.long_speed, mi.long_accel),
+                SpeedMode::DistHub => {
+                    if self.dist_hub.get() >= 200.0 {
+                        (mi.long_speed, mi.long_accel)
+                    } else {
+                        (mi.short_speed, mi.short_accel)
+                    }
+                }
+                _ => (mi.short_speed, mi.short_accel),
+            }
+        };
+        let pv = |v: f64, int: bool| if int { PyVal::Int(v as i64) } else { PyVal::Float(v) };
+        (pv(speed, si), pv(accel, ai))
+    }
+
     pub fn get_active_assist(&self, distance: f64, assist_active: AssistActive) -> bool {
         match assist_active {
             AssistActive::Yes => true,
@@ -1123,6 +1209,9 @@ impl AfcLane {
 
     /// move(distance, speed, accel, assist_active)
     pub fn move_lane(&self, distance: f64, speed: f64, accel: f64, assist_active: bool) -> KResult<()> {
+        if self.stepper.borrow().is_some() {
+            return super::stepper::lane_move(self, distance, speed, accel, assist_active);
+        }
         if self.canvas.borrow().is_some() {
             return super::canvas::lane_move(self, distance, speed, accel, true);
         }
@@ -1135,7 +1224,26 @@ impl AfcLane {
         if self.canvas.borrow().is_some() {
             return super::canvas::lane_move_to(self, distance, speed_mode, endstop, use_homing);
         }
-        let _ = assist_active;
+        if self.stepper.borrow().is_some() {
+            if use_homing {
+                // Add extra distance to homing move to guarantee that endstop is hit
+                let overshoot = self.settings().homing_overshoot.unwrap_or(0.0);
+                let new_distance = if distance < 0.0 { distance - overshoot } else { distance + overshoot };
+                self.unit_obj()?.select_lane(&self.rc(), false)?;
+                let (speed, accel) = self.get_speed_accel_pv(speed_mode);
+                let (homed, mov_dis, error) = super::stepper::home_to(&self.rc(), endstop, new_distance, &speed, &accel, distance > 0.0, true, self.get_active_assist(distance, assist_active))?;
+                let warn = if error {
+                    MoveWarning::Error
+                } else if (distance.abs() - mov_dis) > self.settings().homing_delta.unwrap_or(0.0) {
+                    MoveWarning::Warn
+                } else {
+                    MoveWarning::None
+                };
+                return Ok((homed, mov_dis, warn));
+            }
+            self.move_advanced(distance, speed_mode, assist_active)?;
+            return Ok((true, 0.0, MoveWarning::None));
+        }
         if self.extruder_obj()?.is_standalone() {
             Ok((true, 0.0, MoveWarning::None))
         } else {
@@ -1326,57 +1434,61 @@ impl AfcLane {
             return Ok(());
         }
         self.prep_active.set(true);
-        let res = (|| -> KResult<bool> {
-            self.mutex.lock()?;
-            if self.printer.state_message() == "Printer is ready" && self.afc_prep_done.get() && self.status.get() != LaneState::ToolUnloading {
-                if self.prep_state.get() && !self.raw_load_state() {
-                    self.afc.logger.debug(c, &format!("Prep: callback triggered {}", self.name));
-                    if delta_time < 1.0 {
-                        return Ok(true);
-                    }
-                    let other_active = self.afc.lanes.borrow().values().any(|l| !Rc::ptr_eq(l, &me) && l.prep_active.get());
-                    if self.afc.function.is_printing(true)? || other_active {
-                        self.afc.error.afc_error(c, &format!("Cannot load {} spool while printer is actively moving or homing", self.name), false, None)?;
-                        return Ok(false);
-                    }
-                    self.afc.last_prep_activity_time.set(eventtime);
-                    let unit = self.unit_obj()?;
-                    unit.lane_loading(&me)?;
-                    unit.prep_load(&me)?;
-                    self.status.set(LaneState::None);
-                    self.afc.logger.debug(c, &format!("Prep: Load Done-{}", self.name));
-                    if self.hub.borrow().as_deref() == Some("direct_load") && self.prep_state.get() {
-                        self.afc.logger.debug(c, &format!("Prep: direct load logic-{}-{}", self.name, py_opt_str(self.hub.borrow().as_deref())));
-                        if !self.afc.tool_load(&me, None, false)? {
-                            self.afc.afc_stats()?.increase_load_error_count(&self.afc)?;
+        // `with self.mutex:` - held for the body, released on every exit
+        let res = self.mutex.lock().map_err(KError::from).and_then(|()| {
+            let r = (|| -> KResult<bool> {
+                if self.printer.state_message() == "Printer is ready" && self.afc_prep_done.get() && self.status.get() != LaneState::ToolUnloading {
+                    if self.prep_state.get() && !self.raw_load_state() {
+                        self.afc.logger.debug(c, &format!("Prep: callback triggered {}", self.name));
+                        if delta_time < 1.0 {
+                            return Ok(true);
                         }
-                        let l = me.clone();
-                        self.afc.spool.set_values(&me, Some(Box::new(move || l.afc.spool.set_active_spool(&l.spool_id.borrow().clone()))))?;
-                        self.afc.logger.debug(c, &format!("Prep: direct load logic done-{}-{}", self.name, py_opt_str(self.hub.borrow().as_deref())));
-                        return Ok(true);
-                    }
-                    unit.prep_post_load(&me)?;
-                    self.do_enable(false)?;
-                    if self.load_state() && self.prep_state.get() {
-                        self.set_loaded()?;
-                        self.post_prep_user_macro()?;
-                        if self.td1_device_id.borrow().is_some() {
-                            self.prep_capture_td1()?;
+                        let other_active = self.afc.lanes.borrow().values().any(|l| !Rc::ptr_eq(l, &me) && l.prep_active.get());
+                        if self.afc.function.is_printing(true)? || other_active {
+                            self.afc.error.afc_error(c, &format!("Cannot load {} spool while printer is actively moving or homing", self.name), false, None)?;
+                            return Ok(false);
                         }
+                        self.afc.last_prep_activity_time.set(eventtime);
+                        let unit = self.unit_obj()?;
+                        unit.lane_loading(&me)?;
+                        unit.prep_load(&me)?;
+                        self.status.set(LaneState::None);
+                        self.afc.logger.debug(c, &format!("Prep: Load Done-{}", self.name));
+                        if self.hub.borrow().as_deref() == Some("direct_load") && self.prep_state.get() {
+                            self.afc.logger.debug(c, &format!("Prep: direct load logic-{}-{}", self.name, py_opt_str(self.hub.borrow().as_deref())));
+                            if !self.afc.tool_load(&me, None, false)? {
+                                self.afc.afc_stats()?.increase_load_error_count(&self.afc)?;
+                            }
+                            let l = me.clone();
+                            self.afc.spool.set_values(&me, Some(Box::new(move || l.afc.spool.set_active_spool(&l.spool_id.borrow().clone()))))?;
+                            self.afc.logger.debug(c, &format!("Prep: direct load logic done-{}-{}", self.name, py_opt_str(self.hub.borrow().as_deref())));
+                            return Ok(true);
+                        }
+                        unit.prep_post_load(&me)?;
+                        self.do_enable(false)?;
+                        if self.load_state() && self.prep_state.get() {
+                            self.set_loaded()?;
+                            self.post_prep_user_macro()?;
+                            if self.td1_device_id.borrow().is_some() {
+                                self.prep_capture_td1()?;
+                            }
+                        }
+                    } else if self.prep_state.get() && self.raw_load_state() && !self.afc.function.is_printing(false)? {
+                        let mut message = format!("Cannot load {} load sensor is triggered.", self.name);
+                        message += "\n    Make sure filament is not stuck in load sensor or check to make sure load sensor is not stuck triggered.";
+                        if self.unit_obj()?.type_name() == "ViViD" {
+                            message += &format!("\n    If filament is not stuck in sensor run AFC_RECOVER_LANE LANE={}", self.name);
+                            message += " to reset internal AFC state.";
+                        }
+                        message += "\n    Once cleared try loading again";
+                        self.afc.error.afc_error(c, &message, false, None)?;
                     }
-                } else if self.prep_state.get() && self.raw_load_state() && !self.afc.function.is_printing(false)? {
-                    let mut message = format!("Cannot load {} load sensor is triggered.", self.name);
-                    message += "\n    Make sure filament is not stuck in load sensor or check to make sure load sensor is not stuck triggered.";
-                    if self.unit_obj()?.type_name() == "ViViD" {
-                        message += &format!("\n    If filament is not stuck in sensor run AFC_RECOVER_LANE LANE={}", self.name);
-                        message += " to reset internal AFC state.";
-                    }
-                    message += "\n    Once cleared try loading again";
-                    self.afc.error.afc_error(c, &message, false, None)?;
                 }
-            }
-            Ok(true)
-        })();
+                Ok(true)
+            })();
+            self.mutex.unlock();
+            r
+        });
         self.prep_active.set(false);
         if res? {
             self.afc.save_vars()?;
@@ -1462,23 +1574,50 @@ impl AfcLane {
     }
 
     pub fn do_enable(&self, enable: bool) -> KResult<()> {
+        if self.stepper.borrow().is_some() {
+            return super::stepper::lane_do_enable(self, enable);
+        }
         if self.canvas.borrow().is_some() {
             return super::canvas::lane_do_enable(self, enable);
         }
         Ok(())
     }
 
-    pub fn sync_to_extruder(&self, _update_current: bool) -> KResult<()> {
+    pub fn sync_to_extruder(&self, update_current: bool) -> KResult<()> {
+        if self.stepper.borrow().is_some() {
+            let th = self.extruder_obj()?.th_extruder_name.clone();
+            return super::stepper::lane_sync_to_extruder(self, update_current, Some(&th));
+        }
         Ok(())
     }
 
-    pub fn unsync_to_extruder(&self, _update_current: bool) -> KResult<()> {
+    pub fn unsync_to_extruder(&self, update_current: bool) -> KResult<()> {
+        if self.stepper.borrow().is_some() {
+            return super::stepper::lane_unsync_to_extruder(self, update_current);
+        }
         Ok(())
     }
 
-    pub fn set_load_current(&self) {}
+    pub fn set_load_current(&self) -> KResult<()> {
+        if self.stepper.borrow().is_some() {
+            return super::stepper::set_load_current(self);
+        }
+        Ok(())
+    }
 
-    pub fn set_print_current(&self) {}
+    pub fn set_print_current(&self) -> KResult<()> {
+        if self.stepper.borrow().is_some() {
+            return super::stepper::set_print_current(self);
+        }
+        Ok(())
+    }
+
+    pub fn update_rotation_distance(&self, multiplier: f64) -> KResult<()> {
+        if self.stepper.borrow().is_some() {
+            return super::stepper::update_rotation_distance(self, multiplier);
+        }
+        Ok(())
+    }
 
     #[allow(clippy::approx_constant)] // (python's 3.14159)
     fn calculate_effective_diameter(&self, weight_g: f64, spool_width_mm: f64) -> KResult<f64> {
@@ -1494,15 +1633,16 @@ impl AfcLane {
         let weight = utils::py_float_of(&self.weight.borrow())? + utils::py_float_of(&self.empty_spool_weight.borrow())?;
         let effective_diameter = self.calculate_effective_diameter(weight, 60.0)?;
         let rpm = (feed_rate * 60.0) / (std::f64::consts::PI * effective_diameter);
-        Ok(kaliru::pyfmt::py_min(rpm, self.max_motor_rpm))
+        Ok(kaliru::pyfmt::py_min(rpm, self.max_motor_rpm.as_f64().unwrap_or(0.0)))
     }
 
     fn calculate_pwm_value(&self, feed_rate: f64, rewind: bool) -> KResult<f64> {
         let rpm = self.calculate_rpm(feed_rate)?;
+        let max_motor_rpm = self.max_motor_rpm.as_f64().unwrap_or(0.0);
         let pwm_value = if !rewind {
-            rpm / (self.max_motor_rpm / (1.0 + 9.0 * self.fwd_speed_multi.get()))
+            rpm / (max_motor_rpm / (1.0 + 9.0 * self.fwd_speed_multi.get()))
         } else {
-            rpm / (self.max_motor_rpm / (15.0 + 15.0 * self.rwd_speed_multi.get()))
+            rpm / (max_motor_rpm / (15.0 + 15.0 * self.rwd_speed_multi.get()))
         };
         Ok(kaliru::pyfmt::py_max(0.0, kaliru::pyfmt::py_min(pwm_value, 1.0)))
     }
@@ -1624,22 +1764,42 @@ impl AfcLane {
         self.unit_obj()?.lane_tool_unloaded(&me)
     }
 
-    pub fn enable_buffer(&self, _disable_fault: bool) -> KResult<()> {
-        self.espooler.enable_timer();
+    pub fn enable_buffer(&self, disable_fault: bool) -> KResult<()> {
+        if let Some(b) = self.buffer_obj() {
+            if disable_fault {
+                b.disable_fault_sensitivity();
+            }
+            b.enable_buffer(&self.rc())?;
+        }
+        self.espooler.enable_timer()?;
         self.enable_weight_timer()
     }
 
-    pub fn enable_fault_detection(&self) {}
+    /// The buffer's fault sensitivity back on, re-enabling the buffer
+    pub fn enable_fault_detection(&self) -> KResult<()> {
+        if let Some(b) = self.buffer_obj() {
+            b.restore_fault_sensitivity();
+            b.enable_buffer(&self.rc())?;
+        }
+        Ok(())
+    }
 
     pub fn disable_buffer(&self) -> KResult<()> {
+        if let Some(b) = self.buffer_obj() {
+            b.disable_buffer()?;
+        }
         self.espooler.disable_timer();
         self.disable_weight_timer()
+    }
+
+    pub fn buffer_status(&self) -> Option<String> {
+        self.buffer_obj().map(|b| b.buffer_status())
     }
 
     pub fn get_toolhead_pre_sensor_state(&self) -> KResult<bool> {
         let e = self.extruder_obj()?;
         if e.tool_start.as_deref() == Some("buffer") {
-            return Err(no_attr("NoneType", "advance_state"));
+            return Ok(self.buffer_obj().ok_or_else(|| no_attr("NoneType", "advance_state"))?.advance_state.get());
         }
         Ok(e.tool_start_state.get())
     }
@@ -1653,7 +1813,7 @@ impl AfcLane {
     }
 
     pub fn get_trailing(&self) -> Option<bool> {
-        None
+        self.buffer_obj().map(|b| b.trailing_state.get())
     }
 
     fn is_normal_printing_state(&self) -> bool {
@@ -1906,7 +2066,7 @@ impl AfcLane {
                 self.afc.error.afc_error(c, &msg, false, None)?;
                 status = false;
             }
-            self.unit_obj()?.move_to_hub(&me, hub.td1_bowden_length, MoveDirection::Neg, self.afc.homing_enabled, SpeedMode::Long)?;
+            self.unit_obj()?.move_to_hub(&me, hub.td1_bowden_length.get(), MoveDirection::Neg, self.afc.homing_enabled, SpeedMode::Long)?;
             if success {
                 self.send_lane_data()?;
             }
@@ -2098,7 +2258,7 @@ impl AfcLane {
         r.insert("hub".into(), opt(self.hub.borrow().clone()));
         r.insert("extruder".into(), opt(self.afc_extruder_name.borrow().clone()));
         r.insert("buffer".into(), opt(self.buffer_name.borrow().clone()));
-        r.insert("buffer_status".into(), PyVal::None);
+        r.insert("buffer_status".into(), self.buffer_status().map_or(PyVal::None, PyVal::Str));
         r.insert("lane".into(), PyVal::Int(self.index));
         if !save_to_file {
             r.insert("map".into(), PyVal::List(self.map.borrow().iter().map(|m| PyVal::Str(m.clone())).collect()));

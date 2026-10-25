@@ -815,7 +815,7 @@ impl Afc {
         s.insert("maps".into(), PyVal::List(self.tool_cmds.borrow().keys().map(|k| PyVal::Str(k.clone())).collect()));
         s.insert("extruders".into(), PyVal::List(self.tools.borrow().values().map(|e| PyVal::Str(e.name.clone())).collect()));
         s.insert("hubs".into(), PyVal::List(self.hubs.borrow().keys().map(|k| PyVal::Str(k.clone())).collect()));
-        s.insert("buffers".into(), PyVal::List(vec![]));
+        s.insert("buffers".into(), PyVal::List(self.buffers.borrow().keys().map(|k| PyVal::Str(k.clone())).collect()));
         s.insert("message".into(), PyVal::Dict(self.get_message(false)));
         s.insert("led_state".into(), PyVal::Bool(self.led_state.get()));
         s.insert("multiple_tool_mapping".into(), PyVal::Bool(self.enable_multiple_mapping.get()));
@@ -860,7 +860,11 @@ impl Afc {
         }
         system.insert("extruders".into(), PyVal::Dict(extruders));
         system.insert("hubs".into(), PyVal::Dict(hubs));
-        system.insert("buffers".into(), PyVal::dict());
+        let mut buffers = PyDict::default();
+        for b in self.buffers.borrow().values() {
+            buffers.insert(b.name.clone().into(), b.status()?);
+        }
+        system.insert("buffers".into(), PyVal::Dict(buffers));
         system.insert("led_state".into(), PyVal::Bool(self.led_state.get()));
         s.insert("system".into(), PyVal::Dict(system));
         web_request.send(PyVal::Dict(kaliru::pydict! { "status:" => PyVal::Dict(kaliru::pydict! { "AFC" => PyVal::Dict(s) }) }))
@@ -997,13 +1001,20 @@ impl Afc {
     }
 
     pub(super) fn cmd_turn_off_afc_led(self: &Rc<Self>, _gcmd: &GCodeCommand) -> KResult<()> {
-        // (led_obj is empty: AFC_led is outside the native scope)
         self.led_state.set(false);
+        let leds: Vec<_> = self.led_obj.borrow().values().cloned().collect();
+        for led in leds {
+            led.turn_off_leds()?;
+        }
         Ok(())
     }
 
     pub(super) fn cmd_turn_on_afc_led(self: &Rc<Self>, _gcmd: &GCodeCommand) -> KResult<()> {
         self.led_state.set(true);
+        let leds: Vec<_> = self.led_obj.borrow().values().cloned().collect();
+        for led in leds {
+            led.turn_on_leds()?;
+        }
         Ok(())
     }
 

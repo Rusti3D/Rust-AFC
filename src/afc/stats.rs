@@ -388,7 +388,7 @@ impl AfcStats {
         let mut strings = vec![];
         for unit in afc.units.borrow().values() {
             for lane in unit.lanes.borrow().values() {
-                let espooler_stats = lane.espooler.get_spooler_stats(short);
+                let espooler_stats = lane.espooler.get_spooler_stats(short)?;
                 let count = lane.lane_load_count()?.value();
                 let mut string = format!("{} : Lane change count: {}", r(&lane.name, name_width), r(&fmt(&count), 7));
                 if short {

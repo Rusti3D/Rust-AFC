@@ -7,6 +7,8 @@
 pub mod ace;
 pub mod ace_transport;
 pub mod assist;
+pub mod boxturtle;
+pub mod buffer;
 pub mod canvas;
 pub mod codes;
 pub mod error;
@@ -14,11 +16,13 @@ pub mod extruder;
 pub mod functions;
 pub mod hub;
 pub mod lane;
+pub mod led;
 pub mod logger;
 pub mod prep;
 pub mod respond;
 pub mod scope;
 pub mod spool;
+pub mod stepper;
 pub mod stats;
 pub mod toolchange;
 pub mod unit;
@@ -146,8 +150,11 @@ pub struct Afc {
     pub tools: RefCell<IndexMap<String, Rc<AfcExtruder>>>,
     pub lanes: RefCell<IndexMap<String, Rc<AfcLane>>>,
     pub hubs: RefCell<IndexMap<String, Rc<AfcHub>>>,
+    pub buffers: RefCell<IndexMap<String, Rc<buffer::AfcBuffer>>>,
     pub tool_cmds: RefCell<IndexMap<String, String>>,
     pub led_state: Cell<bool>,
+    /// led_obj: the AFC_led chains by name
+    pub led_obj: RefCell<kaliru::IndexMap<String, Rc<led::AfcLed>>>,
     pub bypass: RefCell<Option<Rc<kaliru::extras::filament_switch_sensor::RunoutHelper>>>,
     bypass_last_state: Cell<bool>,
     quiet_switch: RefCell<Option<Rc<kaliru::extras::filament_switch_sensor::RunoutHelper>>>,
@@ -226,6 +233,9 @@ pub struct Afc {
     pub auto_level_macro: Option<String>,
     pub show_quiet_mode: bool,
     pub quiet_moves_speed: Cell<f64>,
+    /// quiet_moves_speed is still python's int default (prints "50")
+    pub quiet_moves_int: Cell<bool>,
+    pub move_ints: MoveInts,
     pub long_moves_speed: f64,
     pub long_moves_accel: f64,
     pub short_moves_speed: f64,
@@ -260,6 +270,8 @@ pub struct Afc {
     pub assisted_unload: bool,
     pub bypass_pause: bool,
     pub unload_on_runout: bool,
+    /// global_print_current: the lane steppers' current while printing
+    pub global_print_current: Option<f64>,
     pub clear_spool_after_eject: bool,
     pub short_stats: bool,
     pub enable_assist: bool,
@@ -389,11 +401,12 @@ impl Afc {
         let auto_home = config.getboolean("auto_home", false)?;
         let auto_level_macro = config.get_opt("auto_level_macro")?;
         let show_quiet_mode = config.getboolean("show_quiet_mode", true)?;
-        let quiet_moves_speed = config.getfloat("quiet_moves_speed", 50.0, Lim::new())?;
-        let long_moves_speed = config.getfloat("long_moves_speed", 100.0, Lim::new())?;
-        let long_moves_accel = config.getfloat("long_moves_accel", 400.0, Lim::new())?;
-        let short_moves_speed = config.getfloat("short_moves_speed", 25.0, Lim::new())?;
-        let short_moves_accel = config.getfloat("short_moves_accel", 400.0, Lim::new())?;
+        let (quiet_moves_speed, quiet_moves_int) = getfloat_int(config, "quiet_moves_speed", PyVal::Int(50))?;
+        let (long_moves_speed, long_speed_int) = getfloat_int(config, "long_moves_speed", PyVal::Int(100))?;
+        let (long_moves_accel, long_accel_int) = getfloat_int(config, "long_moves_accel", PyVal::Int(400))?;
+        let (short_moves_speed, short_speed_int) = getfloat_int(config, "short_moves_speed", PyVal::Int(25))?;
+        let (short_moves_accel, short_accel_int) = getfloat_int(config, "short_moves_accel", PyVal::Int(400))?;
+        let move_ints = MoveInts { long_speed: long_speed_int, long_accel: long_accel_int, short_speed: short_speed_int, short_accel: short_accel_int };
         let short_move_dis = config.getfloat("short_move_dis", 10.0, Lim::new())?;
         let tool_homing_distance = config.getfloat("tool_homing_distance", 200.0, Lim::new())?;
         let max_move_dis = config.getfloat("max_move_dis", 999999.0, Lim::new())?;
@@ -413,7 +426,7 @@ impl Afc {
         let resume_speed = config.getfloat("resume_speed", speed, Lim::new())?;
         let error_timeout = config.getfloat("error_timeout", 36000.0, Lim::new())?;
         let resume_z_speed = config.getfloat("resume_z_speed", speed, Lim::new())?;
-        let _global_print_current = config.getfloat_opt("global_print_current", Lim::new())?;
+        let global_print_current = config.getfloat_opt("global_print_current", Lim::new())?;
         let spool_ratio = config.getfloat("spool_ratio", 2.0, Lim::new())?;
         let full_weight = config.getfloat("full_weight", 1000.0, Lim::new().min(1))?;
         let enable_sensors_in_gui = config.getboolean("enable_sensors_in_gui", false)?;
@@ -482,8 +495,10 @@ impl Afc {
             tools: RefCell::new(IndexMap::default()),
             lanes: RefCell::new(IndexMap::default()),
             hubs: RefCell::new(IndexMap::default()),
+            buffers: RefCell::new(IndexMap::default()),
             tool_cmds: RefCell::new(IndexMap::default()),
             led_state: Cell::new(true),
+            led_obj: RefCell::new(kaliru::IndexMap::default()),
             bypass: RefCell::new(None),
             bypass_last_state: Cell::new(false),
             quiet_switch: RefCell::new(None),
@@ -557,6 +572,8 @@ impl Afc {
             auto_level_macro,
             show_quiet_mode,
             quiet_moves_speed: Cell::new(quiet_moves_speed),
+            quiet_moves_int: Cell::new(quiet_moves_int),
+            move_ints,
             long_moves_speed,
             long_moves_accel,
             short_moves_speed,
@@ -591,6 +608,7 @@ impl Afc {
             assisted_unload,
             bypass_pause,
             unload_on_runout,
+            global_print_current,
             clear_spool_after_eject,
             short_stats,
             enable_assist,
@@ -974,7 +992,7 @@ impl Afc {
         // Reset fault detection: purging in PRINT_START can trip it
         if let Some(lane) = self.function.get_current_lane_obj() {
             if let Some(b) = lane.buffer_obj() {
-                b.update_filament_error_pos();
+                b.update_filament_error_pos()?;
             }
         }
         Ok(())
@@ -1234,6 +1252,9 @@ impl Afc {
     fn cmd_afc_quiet_mode(self: &Rc<Self>, gcmd: &GCodeCommand) -> KResult<()> {
         let enable = gcmd.get_int("ENABLE", Some(self.get_quiet_mode() as i64), Lim::new().min(0).max(1))? != 0;
         self.set_quiet_mode(enable);
+        if gcmd.get_opt("SPEED").is_some() {
+            self.quiet_moves_int.set(false);
+        }
         self.quiet_moves_speed.set(gcmd.get_float("SPEED", Some(self.quiet_moves_speed.get()), Lim::new().min(10.0).max(400.0))?);
         self.logger.info(
             &AFC_AFC_CMD_AFC_QUIET_MODE,
@@ -1277,7 +1298,7 @@ impl Afc {
         };
         self.current_state.set(State::MovingLane);
         let speed_mode = if distance.abs() >= 200.0 { SpeedMode::Long } else { SpeedMode::Short };
-        cur_lane.set_load_current();
+        cur_lane.set_load_current()?;
         cur_lane.move_advanced(distance, speed_mode, AssistActive::Yes)?;
         cur_lane.do_enable(false)?;
         self.current_state.set(State::Idle);
@@ -1714,7 +1735,7 @@ impl Afc {
                     cur_lane.unit_obj()?.lane_tool_loaded(cur_lane)?;
                     cur_lane.espooler.do_assist_move(None)?;
                     self.do_poop_kick_wipe(cur_lane, &cur_extruder, purge_length)?;
-                    cur_lane.enable_fault_detection();
+                    cur_lane.enable_fault_detection()?;
                     *cur_extruder.lane_loaded.borrow_mut() = Some(cur_lane.name.clone());
                     self.spool.set_active_spool(&cur_lane.spool_id.borrow())?;
                     cur_lane.unit_obj()?.lane_tool_loaded(cur_lane)?;
@@ -1909,4 +1930,27 @@ impl PrinterObject for Afc {
 
 pub fn load_config(config: &ConfigWrapper) -> KResult<PObj> {
     Ok(Afc::new(config)?)
+}
+
+/// Which move speeds are still python's int defaults: config.getfloat hands a
+/// default back unchanged, so AFC's 25 / 100 / 400 stay ints through the units
+/// and lanes that inherit them, and print as "25", not "25.0"
+#[derive(Clone, Copy, Default)]
+pub struct MoveInts {
+    pub long_speed: bool,
+    pub long_accel: bool,
+    pub short_speed: bool,
+    pub short_accel: bool,
+}
+
+/// config.getfloat(name, default): the value as python has it (a default
+/// comes back unconverted, so an int default stays an int)
+pub fn getfloat_pv(config: &ConfigWrapper, name: &str, default: PyVal) -> KResult<PyVal> {
+    Ok(config.getfloat_value(name, &kaliru::configfile::Dflt::Val(default.clone()), &Lim::new())?.unwrap_or(default))
+}
+
+/// config.getfloat(name, default) as (value, whether it is still an int)
+pub fn getfloat_int(config: &ConfigWrapper, name: &str, default: PyVal) -> KResult<(f64, bool)> {
+    let v = config.getfloat_value(name, &kaliru::configfile::Dflt::Val(default), &Lim::new())?.unwrap_or(PyVal::Float(0.0));
+    Ok((v.as_f64().unwrap_or(0.0), matches!(v, PyVal::Int(_))))
 }

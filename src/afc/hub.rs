@@ -19,13 +19,6 @@ use std::rc::{Rc, Weak};
 /// "afc_hub:register_macros"
 pub const REGISTER_MACROS_EVENT: &str = "afc_hub:register_macros";
 
-/// A lane's buffer: AFC_buffer is outside the native scope, so lanes have none
-pub struct NoBuffer;
-
-impl NoBuffer {
-    pub fn update_filament_error_pos(&self) {}
-}
-
 /// [AFC_hub <name>]
 pub struct AfcHub {
     me: Weak<AfcHub>,
@@ -38,7 +31,7 @@ pub struct AfcHub {
     pub switch_pin: Option<String>,
     hub_clear_move_dis: f64,
     pub afc_bowden_length: Cell<f64>,
-    pub td1_bowden_length: f64,
+    pub td1_bowden_length: Cell<f64>,
     pub afc_unload_bowden_length: Cell<f64>,
     pub assisted_retract: bool,
     move_dis: f64,
@@ -100,7 +93,7 @@ impl AfcHub {
             switch_pin: switch_pin.clone(),
             hub_clear_move_dis,
             afc_bowden_length: Cell::new(afc_bowden_length),
-            td1_bowden_length,
+            td1_bowden_length: Cell::new(td1_bowden_length),
             afc_unload_bowden_length: Cell::new(afc_unload_bowden_length),
             assisted_retract,
             move_dis,

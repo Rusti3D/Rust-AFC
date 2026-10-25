@@ -1,0 +1,38 @@
+# fake_moonraker
+# btnobuf_toolchange's load on COSMOS's complete BoxTurtle setup (configs/
+# boxturtle_flow.cfg), so with its TurtleNeck buffer: once lane1 is in the
+# toolhead the buffer runs it, its switches (TEST_BUTTON) set the lane's
+# rotation distance and LEDs, the buffer commands report and adjust it;
+# then the unload disables it
+CONFIG ../configs/boxturtle_flow.cfg
+DICTIONARY atmega2560.dict Turtle_1=stm32h723.dict
+
+G4 P1000
+SET_KINEMATIC_POSITION X=100 Y=100 Z=10
+WAIT 6
+TEST_BUTTON PIN=^!Turtle_1:TRG1 STATE=1
+WAIT 6
+T0
+WAIT 2
+QUERY_BUFFER BUFFER=Turtle_1
+TEST_BUTTON PIN=^Turtle_1:TN_ADV STATE=1
+WAIT 1
+QUERY_BUFFER BUFFER=Turtle_1
+TEST_BUTTON PIN=^Turtle_1:TN_ADV STATE=0
+TEST_BUTTON PIN=^Turtle_1:TN_TRL STATE=1
+WAIT 1
+QUERY_BUFFER BUFFER=Turtle_1
+SET_ROTATION_FACTOR BUFFER=Turtle_1 FACTOR=1.2
+SET_BUFFER_MULTIPLIER BUFFER=Turtle_1 MULTIPLIER=LOW FACTOR=0.8
+SET_BUFFER_MULTIPLIER BUFFER=Turtle_1 MULTIPLIER=HIGH FACTOR=0.8
+SET_ROTATION_FACTOR BUFFER=Turtle_1
+DISABLE_BUFFER BUFFER=Turtle_1
+ENABLE_BUFFER BUFFER=Turtle_1 LANE=lane1
+QUERY_BUFFER BUFFER=Turtle_1
+TEST_BUTTON PIN=^Turtle_1:TN_TRL STATE=0
+TEST_BUTTON PIN=^PK1 STATE=0
+WAIT 2
+TOOL_UNLOAD LANE=lane1
+WAIT 3
+QUERY_BUFFER BUFFER=Turtle_1
+AFC_STATUS

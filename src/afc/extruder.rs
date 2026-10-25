@@ -513,6 +513,12 @@ impl AfcExtruder {
         true
     }
 
+    /// prep_on_shuttle_check: PREP's " in ToolHead" (a toolchanger tool
+    /// also reports whether it is on the shuttle)
+    pub fn prep_on_shuttle_check(&self) -> String {
+        "<span class=primary--text> in ToolHead</span>".to_string()
+    }
+
     pub fn is_standalone(&self) -> bool {
         self.no_lanes.get()
     }

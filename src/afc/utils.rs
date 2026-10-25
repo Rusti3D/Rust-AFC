@@ -319,7 +319,8 @@ pub type ButtonAction = Rc<dyn Fn(f64, bool) -> KResult<()>>;
 pub struct DebounceButton {
     printer: Rc<Printer>,
     reactor: Rc<Reactor>,
-    fila: Rc<SwitchSensor>,
+    // weak: the sensor's hook owns this button (python's bound method)
+    fila: std::rc::Weak<SwitchSensor>,
     button_action: RefCell<Option<ButtonAction>>,
     pub debounce_delay: Cell<f64>,
     logical_state: Cell<Option<bool>>,
@@ -333,7 +334,7 @@ impl DebounceButton {
         let b = Rc::new(DebounceButton {
             printer: printer.clone(),
             reactor: printer.get_reactor(),
-            fila: fila.clone(),
+            fila: Rc::downgrade(fila),
             button_action: RefCell::new(None),
             debounce_delay: Cell::new(0.0),
             logical_state: Cell::new(None),
@@ -341,11 +342,10 @@ impl DebounceButton {
             latest_eventtime: Cell::new(0.0),
         });
         // kalico's signature (eventtime, is_filament_present, force, immediate)
-        let w = Rc::downgrade(&b);
-        *fila.runout_helper.note_hook.borrow_mut() = Some(Rc::new(move |eventtime, state, _force, _immediate| match w.upgrade() {
-            Some(b) => b.button_handler(eventtime, state.unwrap_or(false)),
-            None => Ok(()),
-        }));
+        // the hook owns the button, as python's note_filament_present holds
+        // the bound _button_handler: it lives on where the caller drops it
+        let h = b.clone();
+        *fila.runout_helper.note_hook.borrow_mut() = Some(Rc::new(move |eventtime, state, _force, _immediate| h.button_handler(eventtime, state.unwrap_or(false))));
         b.debounce_delay.set(config.getfloat("debounce_delay", 0.0, Lim::new().min(0.0))?);
         Ok(b)
     }
@@ -356,7 +356,10 @@ impl DebounceButton {
 
     /// _old_note_filament_present(eventtime, state): the sensor's own handler
     pub fn old_note_filament_present(&self, eventtime: f64, state: bool) -> KResult<()> {
-        self.fila.runout_helper.note_filament_present_orig(eventtime, Some(state), false, false)
+        match self.fila.upgrade() {
+            Some(fila) => fila.runout_helper.note_filament_present_orig(eventtime, Some(state), false, false),
+            None => Ok(()),
+        }
     }
 
     fn button_handler(self: &Rc<Self>, eventtime: f64, state: bool) -> KResult<()> {

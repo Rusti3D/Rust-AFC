@@ -1,0 +1,26 @@
+# fake_moonraker
+# COSMOS BoxTurtle lanes (configs/boxturtle_min.cfg) through the stepper's own
+# commands and AFC's lane commands: AFC_STEPPER_HOME moves, enable, homing moves
+# that never trigger (batch mode) and an unknown endstop; long lane moves (split
+# by max_move_dis); a lane set loaded then unloaded; eject, calibration, hub load
+CONFIG ../configs/boxturtle_min.cfg
+DICTIONARY atmega2560.dict Turtle_1=stm32h723.dict
+
+G4 P1000
+G28
+PREP
+AFC_STEPPER_HOME STEPPER=lane1 DIST=20 SPEED=10
+AFC_STEPPER_HOME STEPPER=lane1 DIST=-10
+AFC_STEPPER_HOME STEPPER=lane2 ENABLE=1
+AFC_STEPPER_HOME STEPPER=lane2 ENABLE=0
+AFC_STEPPER_HOME STEPPER=lane3 STOP_ON_ENDSTOP=2 DIST=30 ENDSTOP=hub
+AFC_STEPPER_HOME STEPPER=lane3 STOP_ON_ENDSTOP=1 DIST=60 ENDSTOP=load
+AFC_STEPPER_HOME STEPPER=lane3 STOP_ON_ENDSTOP=1 DIST=60 ENDSTOP=nonsense
+LANE_MOVE LANE=lane1 DISTANCE=500
+LANE_MOVE LANE=lane1 DISTANCE=-500
+SET_LANE_LOADED LANE=lane2
+TOOL_UNLOAD
+LANE_UNLOAD LANE=lane3
+CALIBRATE_AFC LANE=lane1
+HUB_LOAD LANE=lane4
+AFC_STATUS

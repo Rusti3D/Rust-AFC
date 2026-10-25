@@ -314,6 +314,17 @@ impl AfcPrep {
         self.assign_tcmd.set(false);
         afc.prep_done.set(true);
         afc.save_vars()?;
+        for (buffer_name, buffer_obj) in afc.buffers.borrow().iter() {
+            if buffer_obj.advance_state.get() && buffer_obj.trailing_state.get() {
+                afc.logger.raw(
+                    c,
+                    &format!(
+                        "<span class=warning--text>Warning: Both advance and trailing switches are triggered on Buffer {}. Please check your buffer switches or configuration.</span>",
+                        buffer_name
+                    ),
+                );
+            }
+        }
         let error_str = afc.verify_macro_positions();
         if !error_str.is_empty() {
             afc.logger.error(c, &error_str);

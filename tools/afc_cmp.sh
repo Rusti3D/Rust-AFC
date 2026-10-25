@@ -26,6 +26,8 @@ installed=()
 for f in "$AFC_SRC"/afc_extras/*.py; do cp "$f" $K/extras/; installed+=("$K/extras/$(basename "$f")"); done
 # (the AFC_ACE unit the native ACE follows: tests/reference/AFC_ACE, or ACE_SRC)
 cp -r "${ACE_SRC:-$HERE/tests/reference/AFC_ACE}" $K/plugins/AFC_ACE && installed+=("$K/plugins/AFC_ACE")
+# test-only plugins (TEST_BUTTON: tests/plugins/test_button.py; kaliru-afc has it natively)
+for f in "$HERE"/tests/plugins/*.py; do cp "$f" $K/plugins/; installed+=("$K/plugins/$(basename "$f")"); done
 fake=
 mr=
 trap 'rm -rf "${installed[@]}" $STATE; kill $fake $mr 2>/dev/null' EXIT
@@ -53,6 +55,10 @@ same=0
 for t in "$@"; do
     t=$(realpath "$t")
     name=$(basename "$t" .test)
+    if [ ! -f "$t" ]; then
+        echo "MISSING $name ($t)"
+        continue
+    fi
     rm -rf ~/rk/rafc_py ~/rk/rafc_rs
     fresh "$t"
     python3 "$HERE/tools/refrun.py" --timeout "${TIMEOUT:-300}" --out ~/rk/rafc_py --cwd $KALICO \

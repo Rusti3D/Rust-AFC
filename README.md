@@ -26,7 +26,7 @@ plugin layer, unchanged.
 
 | covered natively | still Python AFC |
 |---|---|
-| AFC core, prep, hubs, extruders (no toolchanger / buffer options), lanes of the units below, spool, error, stats; Elegoo Canvas (`AFC_canvas`, needs COSMOS's drv8833 module); Anycubic ACE Pro / ACE 2 Pro ([cosmoace_afc](https://github.com/Rusti3D)'s `AFC_ACE`) | stepper lanes (BoxTurtle, NightOwl, QuattroBox, HTLF, Claymore, EMU, ViViD), buffers, LEDs, buttons, form_tip, poop, Toolchanger, OpenAMS / OAMS |
+| AFC core, prep, hubs, extruders (no toolchanger options, no buffer as toolhead sensor), lanes of the units below, spool, error, stats; stepper lanes (`AFC_stepper`) of BoxTurtle, NightOwl, QuattroBox; espoolers (N20 assist motors); `AFC_led`; switched (TurtleNeck) `AFC_buffer`; Elegoo Canvas (`AFC_canvas`, needs COSMOS's drv8833 module); Anycubic ACE Pro / ACE 2 Pro ([cosmoace_afc](https://github.com/Rusti3D)'s `AFC_ACE`) | HTLF, Claymore, EMU, ViViD, Toolchanger, OpenAMS / OAMS; FPS_PSF buffers; buttons, form_tip, poop |
 
 Ported against AFC 1.2.7 as COSMOS ships it. The plan and progress are in [STATUS.md](STATUS.md) and
 [docs/PLAN.md](docs/PLAN.md).
@@ -45,8 +45,10 @@ plus this plugin, `src/main.rs`) in batch mode and compares them: the messages s
 byte, and klippy.log with only wall-clock and thread-timing values masked (`tools/refdiff.py`). Units with
 serial devices run against fakes (`tools/fake_ace.py`, an ACE Pro on a pseudo-terminal), and
 `tools/fake_moonraker.py` answers AFC's Moonraker client (AFC creates its stats on connecting, and every load
-and unload updates them). Batch mode has no MCU
-replies, so motor moves and sensor changes beyond what fakes provide need real hardware.
+and unload updates them). Batch mode has no MCU input, so sensors change through a test-only
+`TEST_BUTTON PIN= STATE=` (`tests/plugins/test_button.py` / `src/test_button.rs`, the buttons_state message
+the MCU would send), optionally following the homing moves (`follow_homing`: the sensor a lane homes to
+changes during the move), and `WAIT <secs>` lines pace the input so AFC reacts as on an idle printer.
 
 ```sh
 cargo build --release

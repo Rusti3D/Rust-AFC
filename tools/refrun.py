@@ -13,11 +13,14 @@
 import argparse
 import os
 import pathlib
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 KALICO = pathlib.Path.home() / "rk/kalico"
@@ -63,6 +66,25 @@ def collect(path, dict_path):
     return items
 
 
+# A test line "WAIT <secs>" paces the input: klippy reads it from a pipe and
+# gets nothing for that long, as a printer gets no command while idle. Batch
+# input otherwise holds the g-code lock for the whole file, so idle_timeout
+# never leaves "Printing" and nothing that waits for an idle printer runs.
+WAIT_RE = re.compile(r"^WAIT\s+([0-9.]+)$")
+
+
+def paced_writer(fifo, lines):
+    with open(fifo, "w") as f:
+        for line in lines:
+            m = WAIT_RE.match(line.strip())
+            if m:
+                f.flush()
+                time.sleep(float(m.group(1)))
+            else:
+                f.write(line + "\n")
+        f.flush()
+
+
 def run_one(args, test, n, it):
     dest = args.out / test.stem / str(n)
     if dest.exists():
@@ -71,7 +93,13 @@ def run_one(args, test, n, it):
     tmp = pathlib.Path(tempfile.mkdtemp())
     try:
         gcode_file = tmp / "_test_.gcode"
-        gcode_file.write_text("\n".join(it["gcode"]) + "\n")
+        writer = None
+        if any(WAIT_RE.match(l.strip()) for l in it["gcode"]):
+            os.mkfifo(gcode_file)
+            writer = threading.Thread(target=paced_writer, args=(gcode_file, it["gcode"]), daemon=True)
+            writer.start()
+        else:
+            gcode_file.write_text("\n".join(it["gcode"]) + "\n")
         cmd = shlex.split(args.klippy) + [
             str(it["config"]), "-i", str(gcode_file),
             "-o", str(tmp / "_test_.output"), "-v"]

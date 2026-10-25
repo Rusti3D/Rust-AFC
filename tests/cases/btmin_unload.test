@@ -1,0 +1,24 @@
+# fake_moonraker
+# btmin_toolchange's load (configs/boxturtle_min_flow.cfg), then the
+# toolhead sensor off before TOOL_UNLOAD, as once the filament is pulled out
+# past it (the toolhead's retract polls the sensor between plain extruder
+# moves, which no homing follows): the unload then runs on through the lane
+# retract behind the hub (a followed homing move) and the park; then lane1
+# ejected
+CONFIG ../configs/boxturtle_min_flow.cfg
+DICTIONARY atmega2560.dict Turtle_1=stm32h723.dict
+
+G4 P1000
+SET_KINEMATIC_POSITION X=100 Y=100 Z=10
+WAIT 6
+TEST_BUTTON PIN=^!Turtle_1:TRG1 STATE=1
+WAIT 6
+T0
+WAIT 3
+TEST_BUTTON PIN=^PK1 STATE=0
+WAIT 2
+TOOL_UNLOAD LANE=lane1
+WAIT 3
+LANE_UNLOAD LANE=lane1
+WAIT 3
+AFC_STATUS

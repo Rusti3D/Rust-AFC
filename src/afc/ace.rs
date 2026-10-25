@@ -1402,7 +1402,7 @@ fn path_lengths(lane: &AfcLane) -> (f64, f64) {
 /// _seed_spool_weight: a fresh spool gets the unit's full_weight
 fn seed_spool_weight(unit: &AfcUnit, lane: &AfcLane) {
     if !lane.weight.borrow().truthy() {
-        *lane.weight.borrow_mut() = PyVal::Float(unit.settings.full_weight);
+        *lane.weight.borrow_mut() = unit.settings.full_weight.clone();
     }
 }
 

@@ -59,18 +59,19 @@ pub struct UnitSettings {
     pub load_then_home_var: bool,
     pub load_undershoot: f64,
     pub rev_long_moves_speed_factor: f64,
+    pub move_ints: super::MoveInts,
     pub extruder_clear_dis: f64,
     pub tool_max_unload_attempts: i64,
     pub n20_break_delay_time: f64,
     pub enable_assist: bool,
     pub enable_assist_weight: f64,
-    pub timer_delay: f64,
+    pub timer_delay: PyVal,
     pub enable_kick_start: bool,
-    pub spool_ratio: f64,
-    pub full_weight: f64,
+    pub spool_ratio: PyVal,
+    pub full_weight: PyVal,
     pub espool_rot_dist: f64,
     pub kick_start_time: f64,
-    pub delta_movement: f64,
+    pub delta_movement: PyVal,
     pub scaling: f64,
     pub assisted_unload: bool,
     pub td1_when_loaded: bool,
@@ -83,6 +84,8 @@ pub struct UnitSettings {
 pub enum UnitKind {
     Canvas(CanvasUnit),
     Ace(Box<AceUnit>),
+    /// BoxTurtle, NightOwl, QuattroBox (lanes with their own steppers)
+    BoxTurtle(super::boxturtle::Family),
 }
 
 /// [AFC_canvas]: a unit
@@ -100,6 +103,7 @@ pub struct AfcUnit {
     hub: Option<String>,
     extruder: Option<String>,
     buffer_name: Option<String>,
+    pub buffer_obj: RefCell<Option<Rc<super::buffer::AfcBuffer>>>,
     pub remember_spool: bool,
     pub settings: UnitSettings,
     pub unload_on_runout: bool,
@@ -109,6 +113,9 @@ pub struct AfcUnit {
     type_name: String,
     pub logo: RefCell<String>,
     pub logo_error: RefCell<String>,
+    pub led_logo_index: Option<String>,
+    pub led_logo_color: String,
+    pub led_logo_loading: String,
 }
 
 impl AfcUnit {
@@ -147,18 +154,19 @@ impl AfcUnit {
             load_then_home_var: false,
             load_undershoot: 0.0,
             rev_long_moves_speed_factor: 0.0,
+            move_ints: afc.move_ints,
             extruder_clear_dis: 0.0,
             tool_max_unload_attempts: 0,
             n20_break_delay_time: 0.0,
             enable_assist: false,
             enable_assist_weight: 0.0,
-            timer_delay: 0.0,
+            timer_delay: PyVal::Int(0),
             enable_kick_start: false,
-            spool_ratio: 0.0,
-            full_weight: 0.0,
+            spool_ratio: PyVal::Int(0),
+            full_weight: PyVal::Int(0),
             espool_rot_dist: 0.0,
             kick_start_time: 0.0,
-            delta_movement: 0.0,
+            delta_movement: PyVal::Int(0),
             scaling: 0.0,
             assisted_unload: false,
             td1_when_loaded: false,
@@ -166,15 +174,18 @@ impl AfcUnit {
             post_prep_macro: String::new(),
             debug: false,
         };
-        let _led_logo_index = config.get_opt("led_logo_index")?;
-        let _led_logo_color = afc.function.hex_convert(&config.get("led_logo_color", "0,0,0,0")?)?;
-        let _led_logo_loading = afc.function.hex_convert(&config.get("led_logo_loading", led_loading.as_str())?)?;
+        let led_logo_index = config.get_opt("led_logo_index")?;
+        let led_logo_color = afc.function.hex_convert(&config.get("led_logo_color", "0,0,0,0")?)?;
+        let led_logo_loading = afc.function.hex_convert(&config.get("led_logo_loading", led_loading.as_str())?)?;
         let mut settings = settings;
         settings.led_use_filament_color = config.getboolean("led_use_filament_color", afc.led_use_filament_color)?;
-        settings.long_moves_speed = config.getfloat("long_moves_speed", afc.long_moves_speed, Lim::new())?;
-        settings.long_moves_accel = config.getfloat("long_moves_accel", afc.long_moves_accel, Lim::new())?;
-        settings.short_moves_speed = config.getfloat("short_moves_speed", afc.short_moves_speed, Lim::new())?;
-        settings.short_moves_accel = config.getfloat("short_moves_accel", afc.short_moves_accel, Lim::new())?;
+        // (a default comes back unchanged: still an int when AFC's is)
+        let dflt = |v: f64, int: bool| if int { PyVal::Int(v as i64) } else { PyVal::Float(v) };
+        let mi = afc.move_ints;
+        (settings.long_moves_speed, settings.move_ints.long_speed) = super::getfloat_int(config, "long_moves_speed", dflt(afc.long_moves_speed, mi.long_speed))?;
+        (settings.long_moves_accel, settings.move_ints.long_accel) = super::getfloat_int(config, "long_moves_accel", dflt(afc.long_moves_accel, mi.long_accel))?;
+        (settings.short_moves_speed, settings.move_ints.short_speed) = super::getfloat_int(config, "short_moves_speed", dflt(afc.short_moves_speed, mi.short_speed))?;
+        (settings.short_moves_accel, settings.move_ints.short_accel) = super::getfloat_int(config, "short_moves_accel", dflt(afc.short_moves_accel, mi.short_accel))?;
         settings.short_move_dis = config.getfloat("short_move_dis", afc.short_move_dis, Lim::new())?;
         settings.max_move_dis = config.getfloat("max_move_dis", afc.max_move_dis, Lim::new())?;
         settings.homing_overshoot = config.getfloat("homing_overshoot", 50.0, Lim::new())?;
@@ -189,13 +200,13 @@ impl AfcUnit {
         settings.n20_break_delay_time = config.getfloat("n20_break_delay_time", afc.n20_break_delay_time, Lim::new())?;
         settings.enable_assist = config.getboolean("enable_assist", afc.enable_assist)?;
         settings.enable_assist_weight = config.getfloat("enable_assist_weight", afc.enable_assist_weight, Lim::new())?;
-        settings.timer_delay = config.getfloat("timer_delay", 5.0, Lim::new())?;
+        settings.timer_delay = super::getfloat_pv(config, "timer_delay", PyVal::Int(5))?;
         settings.enable_kick_start = config.getboolean("enable_kick_start", true)?;
-        settings.spool_ratio = config.getfloat("spool_ratio", 2.0, Lim::new())?;
-        settings.full_weight = config.getfloat("full_weight", 1000.0, Lim::new())?;
+        settings.spool_ratio = super::getfloat_pv(config, "spool_ratio", PyVal::Int(2))?;
+        settings.full_weight = super::getfloat_pv(config, "full_weight", PyVal::Int(1000))?;
         settings.espool_rot_dist = config.getfloat("espool_rot_dist", 132.9, Lim::new())?;
         settings.kick_start_time = config.getfloat("kick_start_time", 0.070, Lim::new())?;
-        settings.delta_movement = config.getfloat("delta_movement", 150.0, Lim::new())?;
+        settings.delta_movement = super::getfloat_pv(config, "delta_movement", PyVal::Int(150))?;
         settings.scaling = config.getfloat("spoolrate", 1.0, Lim::new())?;
         settings.assisted_unload = config.getboolean("assisted_unload", afc.assisted_unload)?;
         let unload_on_runout = config.getboolean("unload_on_runout", afc.unload_on_runout)?;
@@ -218,6 +229,7 @@ impl AfcUnit {
             hub,
             extruder,
             buffer_name,
+            buffer_obj: RefCell::new(None),
             remember_spool,
             settings,
             unload_on_runout,
@@ -226,6 +238,9 @@ impl AfcUnit {
             type_name,
             logo: RefCell::new(String::new()),
             logo_error: RefCell::new(String::new()),
+            led_logo_index,
+            led_logo_color,
+            led_logo_loading,
         });
         let u = unit.clone();
         kaliru::events::KlippyConnect::on(&printer, move || u.handle_connect());
@@ -255,7 +270,7 @@ impl AfcUnit {
     pub fn canvas(&self) -> &CanvasUnit {
         match &self.kind {
             UnitKind::Canvas(c) => c,
-            UnitKind::Ace(_) => unreachable!("not a Canvas unit"),
+            _ => unreachable!("not a Canvas unit"),
         }
     }
 
@@ -287,10 +302,13 @@ impl AfcUnit {
             }
         }
         if let Some(b) = &self.buffer_name {
-            return Err(KError::config(format!(
+            match self.printer.lookup_object_opt(&format!("AFC_buffer {}", b)).and_then(kaliru::printer::downcast_rc::<super::buffer::AfcBuffer>) {
+                Some(o) => *self.buffer_obj.borrow_mut() = Some(o),
+                None => return Err(KError::config(format!(
                 "Error: No config found for buffer: {} in [AFC_{} {}]. Please make sure [AFC_buffer {}] section exists in your config",
                 b, tn, self.name, b
-            )));
+            ))),
+            }
         }
         self.printer.send_event(&connect_event(&self.name), &[&me])?;
         let cmds: [(&str, fn(&AfcUnit, &GCodeCommand) -> KResult<()>, &str); 3] = [
@@ -305,6 +323,12 @@ impl AfcUnit {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_handle_connect(self),
             UnitKind::Ace(_) => super::ace::unit_handle_connect(self),
+            UnitKind::BoxTurtle(f) => {
+                super::boxturtle::unit_handle_connect(self, *f);
+                if *f == super::boxturtle::Family::QuattroBox {
+                    self.set_logo_color(&self.led_logo_color)?;
+                }
+            }
         }
         Ok(())
     }
@@ -316,7 +340,7 @@ impl AfcUnit {
         *self.lanes.borrow_mut() = lanes.into_iter().collect();
         match &self.kind {
             UnitKind::Ace(_) => super::ace::unit_handle_ready(self),
-            UnitKind::Canvas(_) => Ok(()),
+            UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) => Ok(()),
         }
     }
 
@@ -534,7 +558,7 @@ impl AfcUnit {
     pub fn lane_not_ready(&self, lane: &Rc<AfcLane>) -> KResult<()> {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_lane_not_ready(self, lane),
-            UnitKind::Ace(_) => {
+            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => {
                 if !self.check_led_state(lane, "not_ready") {
                     return Ok(());
                 }
@@ -550,7 +574,7 @@ impl AfcUnit {
     pub fn lane_loaded(&self, lane: &Rc<AfcLane>, force: bool) -> KResult<()> {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_lane_led(self, lane, "lane_loaded", &self.afc.led_ready),
-            UnitKind::Ace(_) => {
+            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => {
                 if !self.check_led_state(lane, "loaded") && !force {
                     return Ok(());
                 }
@@ -567,7 +591,7 @@ impl AfcUnit {
     pub fn lane_unloading(&self, lane: &Rc<AfcLane>) -> KResult<()> {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_lane_led(self, lane, "lane_unloading", &self.afc.led_unloading),
-            UnitKind::Ace(_) => {
+            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => {
                 if !self.check_led_state(lane, "unloading") {
                     return Ok(());
                 }
@@ -579,7 +603,7 @@ impl AfcUnit {
     pub fn lane_unloaded(&self, lane: &Rc<AfcLane>) -> KResult<()> {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_lane_unloaded(self, lane),
-            UnitKind::Ace(_) => {
+            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => {
                 if !self.check_led_state(lane, "unloaded") {
                     return Ok(());
                 }
@@ -600,7 +624,27 @@ impl AfcUnit {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_lane_led(self, lane, "lane_loading", &self.afc.led_loading),
             UnitKind::Ace(_) => super::ace::lane_loading(self, lane),
+            UnitKind::BoxTurtle(f) => {
+                self.base_lane_loading(lane)?;
+                if *f == super::boxturtle::Family::QuattroBox {
+                    self.set_logo_color(&self.led_logo_loading)?;
+                }
+                Ok(())
+            }
         }
+    }
+
+    fn is_quattro_box(&self) -> bool {
+        matches!(self.kind, UnitKind::BoxTurtle(super::boxturtle::Family::QuattroBox))
+    }
+
+    /// set_logo_color: the unit's logo LEDs (a hex value or a color list)
+    pub fn set_logo_color(&self, color: &str) -> KResult<()> {
+        if !color.is_empty() {
+            let led_color = self.afc.function.hex_to_led_string(&color.replace('#', ""))?;
+            self.afc.function.afc_led(&PyVal::List(led_color.into_iter().map(PyVal::Float).collect()), self.led_logo_index.as_deref())?;
+        }
+        Ok(())
     }
 
     /// (the base unit's: no LED state for the Canvas, which has no override)
@@ -612,30 +656,42 @@ impl AfcUnit {
     }
 
     pub fn lane_tool_loaded(&self, lane: &Rc<AfcLane>) -> KResult<()> {
-        match &self.kind {
+        let r = match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_lane_tool_led(self, lane, "lane_tool_loaded", &self.afc.led_tool_loaded, &self.afc.led_tool_loaded),
-            UnitKind::Ace(_) => {
+            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => {
                 if !self.check_led_state(lane, "tool_loaded") {
-                    return Ok(());
-                }
+                    Ok(())
+                } else {
                 let ext = lane.extruder_obj_opt();
                 self.trigger_led(lane, ext.as_deref(), Some(&PyVal::Str(lane.led_tool_loaded())), None, "tool_loaded")
+                }
             }
+        };
+        if self.is_quattro_box() {
+            r?;
+            return self.set_logo_color(&lane.color.borrow().str());
         }
+        r
     }
 
     pub fn lane_tool_unloaded(&self, lane: &Rc<AfcLane>) -> KResult<()> {
-        match &self.kind {
+        let r = match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_lane_tool_led(self, lane, "lane_tool_unloaded", &self.afc.led_ready, &self.afc.led_tool_unloaded),
-            UnitKind::Ace(_) => {
+            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => {
                 if !self.check_led_state(lane, "tool_unloaded") {
-                    return Ok(());
-                }
+                    Ok(())
+                } else {
                 let color = self.get_lane_color(lane, &lane.led_ready())?;
                 let ext = lane.extruder_obj_opt();
                 self.trigger_led(lane, ext.as_deref(), Some(&color), Some(&lane.led_tool_unloaded()), "tool_unloaded")
+                }
             }
+        };
+        if self.is_quattro_box() {
+            r?;
+            return self.set_logo_color(&self.led_logo_color);
         }
+        r
     }
 
     pub fn lane_tool_loaded_idle(&self, lane: &Rc<AfcLane>) -> KResult<()> {
@@ -643,7 +699,7 @@ impl AfcUnit {
             UnitKind::Canvas(_) => {
                 super::canvas::unit_lane_tool_led(self, lane, "lane_tool_loaded_idle", &self.afc.led_tool_loaded_idle, &self.afc.led_tool_loaded_idle)
             }
-            UnitKind::Ace(_) => {
+            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => {
                 if !self.check_led_state(lane, "tool_loaded_idle") {
                     return Ok(());
                 }
@@ -657,7 +713,7 @@ impl AfcUnit {
     pub fn lane_fault(&self, lane: &Rc<AfcLane>) -> KResult<()> {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_lane_led(self, lane, "lane_fault", &self.afc.led_fault),
-            UnitKind::Ace(_) => {
+            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => {
                 if !self.check_led_state(lane, "fault") {
                     return Ok(());
                 }
@@ -669,7 +725,7 @@ impl AfcUnit {
     pub fn lane_illuminate_spool(&self, lane: &Rc<AfcLane>) -> KResult<()> {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_lane_led(self, lane, "lane_illuminate_spool", &self.afc.led_spool_illum),
-            UnitKind::Ace(_) => {
+            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => {
                 if let Some(i) = &lane.led_spool_index {
                     self.afc.function.afc_led(&PyVal::Str(lane.led_spool_illum()), Some(i))?;
                 }
@@ -747,7 +803,7 @@ impl AfcUnit {
     pub fn check_runout(&self, lane: &Rc<AfcLane>) -> KResult<bool> {
         match &self.kind {
             UnitKind::Ace(_) => super::ace::check_runout(self, lane),
-            UnitKind::Canvas(_) => Ok(false),
+            UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) => Ok(false),
         }
     }
 
@@ -755,6 +811,7 @@ impl AfcUnit {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_system_test(self, cur_lane, delay, assign_tcmd, enable_movement),
             UnitKind::Ace(_) => super::ace::system_test(self, cur_lane, assign_tcmd),
+            UnitKind::BoxTurtle(_) => super::boxturtle::unit_system_test(self, cur_lane, delay, assign_tcmd, enable_movement),
         }
     }
 
@@ -764,30 +821,33 @@ impl AfcUnit {
         KError::Py("TypeError".into(), "cannot unpack non-iterable NoneType object".into())
     }
 
-    pub fn calibrate_bowden(&self, _lane: &Rc<AfcLane>, _dis: f64, _tol: f64) -> KResult<(bool, String, f64)> {
+    pub fn calibrate_bowden(&self, lane: &Rc<AfcLane>, dis: f64, tol: f64) -> KResult<(bool, String, f64)> {
         match &self.kind {
             UnitKind::Canvas(_) => Ok((false, super::canvas::CALIBRATION_UNSUPPORTED.into(), 0.0)),
             UnitKind::Ace(_) => Ok((false, super::ace::CALIBRATION_LANE_MESSAGE.into(), 0.0)),
+            UnitKind::BoxTurtle(_) => super::boxturtle::unit_calibrate_bowden(self, lane, dis, tol),
         }
     }
 
-    pub fn calibrate_td1(&self, _lane: &Rc<AfcLane>, _dis: f64, _tol: f64) -> KResult<(bool, String, f64)> {
+    pub fn calibrate_td1(&self, lane: &Rc<AfcLane>, dis: f64, tol: f64) -> KResult<(bool, String, f64)> {
         match &self.kind {
             UnitKind::Canvas(_) => Ok((false, super::canvas::CALIBRATION_UNSUPPORTED.into(), 0.0)),
             UnitKind::Ace(_) => Err(self.not_defined("calibrate_td1")),
+            UnitKind::BoxTurtle(_) => super::boxturtle::unit_calibrate_td1(self, lane, dis, tol),
         }
     }
 
-    pub fn calibrate_lane(&self, _lane: &Rc<AfcLane>, _tol: f64) -> KResult<(bool, String, f64)> {
+    pub fn calibrate_lane(&self, lane: &Rc<AfcLane>, tol: f64) -> KResult<(bool, String, f64)> {
         match &self.kind {
             UnitKind::Canvas(_) => Ok((false, super::canvas::CALIBRATION_UNSUPPORTED.into(), 0.0)),
             UnitKind::Ace(_) => Ok((true, "calibration_lane".into(), 0.0)),
+            UnitKind::BoxTurtle(_) => super::boxturtle::unit_calibrate_lane(self, lane, tol),
         }
     }
 
     pub fn calibration_lane_message(&self) -> String {
         match &self.kind {
-            UnitKind::Canvas(_) => String::new(),
+            UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) => String::new(),
             UnitKind::Ace(_) => super::ace::CALIBRATION_LANE_MESSAGE.into(),
         }
     }
@@ -796,7 +856,7 @@ impl AfcUnit {
     pub fn lane_reset_command(&self, lane: &AfcLane) -> Option<String> {
         match &self.kind {
             UnitKind::Ace(_) => Some(super::ace::get_lane_reset_command(self, lane)),
-            UnitKind::Canvas(_) => None,
+            UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) => None,
         }
     }
 
@@ -804,7 +864,7 @@ impl AfcUnit {
     pub fn unit_load_lane(&self, lane: &Rc<AfcLane>, extruder: &AfcExtruder) -> KResult<Option<bool>> {
         match &self.kind {
             UnitKind::Ace(_) => super::ace::unit_load_lane(self, lane, extruder, false).map(Some),
-            UnitKind::Canvas(_) => Ok(None),
+            UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) => Ok(None),
         }
     }
 
@@ -812,8 +872,13 @@ impl AfcUnit {
     pub fn unit_unload_lane(&self, lane: &Rc<AfcLane>, extruder: &AfcExtruder) -> KResult<Option<bool>> {
         match &self.kind {
             UnitKind::Ace(_) => super::ace::unit_unload_lane(self, lane, extruder).map(Some),
-            UnitKind::Canvas(_) => Ok(None),
+            UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) => Ok(None),
         }
+    }
+
+    /// _buffer_toolhead_load_check
+    pub fn buffer_toolhead_load_check(&self, lane: &Rc<AfcLane>) -> KResult<bool> {
+        super::boxturtle::buffer_toolhead_load_check(self, lane)
     }
 
     pub fn get_calibrated_lanes(&self) -> Option<Vec<String>> {
@@ -873,6 +938,7 @@ impl AfcUnit {
             UnitKind::Canvas(_) => super::canvas::unit_prep_load(self, lane),
             // ACE firmware stages filament at the slot on insert
             UnitKind::Ace(_) => Ok(()),
+            UnitKind::BoxTurtle(_) => super::boxturtle::unit_prep_load(self, lane),
         }
     }
 
@@ -880,6 +946,7 @@ impl AfcUnit {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_prep_post_load(self, lane),
             UnitKind::Ace(_) => Ok(()),
+            UnitKind::BoxTurtle(_) => super::boxturtle::unit_prep_post_load(self, lane),
         }
     }
 
@@ -887,6 +954,7 @@ impl AfcUnit {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_eject_lane(self, lane),
             UnitKind::Ace(_) => super::ace::eject_lane(self, lane),
+            UnitKind::BoxTurtle(_) => super::boxturtle::unit_eject_lane(self, lane),
         }
     }
 
@@ -899,9 +967,14 @@ impl AfcUnit {
     }
 
     pub fn move_to_hub(&self, lane: &Rc<AfcLane>, dist: f64, dir: MoveDirection, use_homing: bool, speed_mode: SpeedMode) -> KResult<(bool, f64, MoveWarning)> {
+        self.move_to_hub_assist(lane, dist, dir, use_homing, speed_mode, AssistActive::Dynamic)
+    }
+
+    /// move_to_hub with its assist_active argument
+    pub fn move_to_hub_assist(&self, lane: &Rc<AfcLane>, dist: f64, dir: MoveDirection, use_homing: bool, speed_mode: SpeedMode, assist_active: AssistActive) -> KResult<(bool, f64, MoveWarning)> {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_move_to_hub(self, lane, dist, dir, use_homing, speed_mode),
-            UnitKind::Ace(_) => lane.move_to(dist * dir.value(), speed_mode, &lane.hub_endstop_name(), AssistActive::Dynamic, use_homing),
+            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => lane.move_to(dist * dir.value(), speed_mode, &lane.hub_endstop_name(), assist_active, use_homing),
         }
     }
 
@@ -915,6 +988,25 @@ impl AfcUnit {
             UnitKind::Ace(_) => {
                 let home_to_tool = self.afc.homing_enabled && self.afc.home_to_tool;
                 lane.move_to(distance, SpeedMode::Long, endstop, assist_active, home_to_tool)
+            }
+            UnitKind::BoxTurtle(_) => {
+                let mut total_distance = distance;
+                let mut speed_mode = SpeedMode::Long;
+                // Only do load then home if user has buffer defined and load then home enabled
+                let home_to_tool = self.afc.homing_enabled && self.afc.home_to_tool;
+                // load_and_home only when the distance is over load_undershoot
+                let (load_then_home, load_undershoot) = {
+                    let s = lane.settings();
+                    (s.load_then_home_var.unwrap_or(false), s.load_undershoot.unwrap_or(0.0))
+                };
+                let load_and_home = load_then_home && distance > load_undershoot;
+                if load_and_home && lane.extruder_obj()?.tool_start.as_deref() == Some("buffer") {
+                    let load_length = distance - load_undershoot;
+                    lane.move_to(load_length, speed_mode, endstop, assist_active, false)?;
+                    total_distance -= load_length;
+                    speed_mode = SpeedMode::Short;
+                }
+                lane.move_to(total_distance, speed_mode, endstop, assist_active, home_to_tool)
             }
         }
     }

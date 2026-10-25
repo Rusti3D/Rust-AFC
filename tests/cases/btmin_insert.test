@@ -1,0 +1,21 @@
+# fake_moonraker
+# A spool into lane1 of the BoxTurtle (configs/boxturtle_min_btn.cfg) on an
+# idle printer (WAIT: paced input; PREP does not move the lanes, see the
+# config), once afc.cfg's welcome PREP is done: prep then load sensor on
+# (TEST_BUTTON, as the AFC-Lite reports them), AFC loads it to the hub
+# (load_to_hub); then out again: load and prep off. No PREP of its own: a
+# second PREP right after the first reads AFC.var.unit while AFC's writer
+# thread may still be writing it, in python as natively
+CONFIG ../configs/boxturtle_min_btn.cfg
+DICTIONARY atmega2560.dict Turtle_1=stm32h723.dict
+
+G4 P1000
+SET_KINEMATIC_POSITION X=100 Y=100 Z=10
+WAIT 6
+TEST_BUTTON PIN=^!Turtle_1:TRG1 STATE=1
+WAIT 1
+TEST_BUTTON PIN=^Turtle_1:EXT1 STATE=1
+WAIT 5
+TEST_BUTTON PIN=^Turtle_1:EXT1 STATE=0
+TEST_BUTTON PIN=^!Turtle_1:TRG1 STATE=0
+WAIT 2

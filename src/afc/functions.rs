@@ -439,7 +439,7 @@ impl AfcFunction {
         })
     }
 
-    /// (error_string, led): AFC_led is not native, so never found
+    /// (error_string, led): the [AFC_led] a led_index names
     pub fn verify_led_object(&self, led_name: &str) -> (String, Option<PObj>) {
         let afc_object = format!("AFC_led {}", led_name.split(':').next().unwrap_or(""));
         match self.printer.lookup_object_opt(&afc_object) {
@@ -485,13 +485,14 @@ impl AfcFunction {
         groups
     }
 
-    /// Sets AFC_led indexes (no AFC_led is native: logs the lookup error)
-    pub fn afc_led(&self, _status: &PyVal, idx: Option<&str>) -> KResult<()> {
+    /// afc_led: a status color on the led_index's LEDs
+    pub fn afc_led(&self, status: &PyVal, idx: Option<&str>) -> KResult<()> {
         let Some(idx) = idx else { return Ok(()) };
-        for (led_name, _index_str) in self.parse_led_groups(idx) {
-            let (error_string, led) = self.verify_led_object(&led_name);
-            if led.is_none() {
-                self.logger().error(&AFC_FUNCTIONS_AFCFUNCTION_AFC_LED, &error_string);
+        for (led_name, index_str) in self.parse_led_groups(idx) {
+            let (_error_string, led) = self.verify_led_object(&led_name);
+            if let Some(led) = led.and_then(kaliru::printer::downcast_rc::<super::led::AfcLed>) {
+                let range_index = self.get_led_indexes(&index_str)?;
+                led.led_change(super::led::LedIndex::List(&range_index), status, true)?;
             }
         }
         Ok(())
@@ -566,7 +567,7 @@ impl AfcFunction {
     pub fn select_loaded_lane(&self) -> KResult<()> {
         if let Some(cur) = self.get_current_lane_obj() {
             cur.unit_obj()?.select_lane(&cur, false)?;
-            cur.set_print_current();
+            cur.set_print_current()?;
         }
         Ok(())
     }
@@ -698,7 +699,9 @@ impl AfcFunction {
     #[allow(clippy::too_many_arguments)] // (python's signature)
     pub fn gcode_get_value(&self, gcmd: &GCodeCommand, kind: &str, variable: &PyVal, variable_name: &str, section_name: &str, key_name: Option<&str>, cast_to_bool: bool) -> KResult<PyVal> {
         let old_value = variable.clone();
+        // (gcmd.get*'s default comes back as it is when the parameter is absent)
         let mut new_value = match kind {
+            _ if gcmd.get_opt(variable_name).is_none() => old_value.clone(),
             "get_float" => PyVal::Float(gcmd.get_float(variable_name, Some(super::utils::py_float_of(variable)?), Lim::new())?),
             "get_int" => PyVal::Int(gcmd.get_int(variable_name, Some(super::utils::py_int_of(variable)?), Lim::new())?),
             _ => PyVal::Str(gcmd.get_or(variable_name, &variable.str())),
@@ -1200,7 +1203,8 @@ impl AfcFunction {
     fn calibration_check_tool_start(&self, cur_lane: &AfcLane) -> KResult<(bool, bool, String)> {
         let extruder = cur_lane.extruder_obj()?;
         if extruder.tool_start.is_none() {
-            // (no buffers in the native scope)
+            // (with a buffer and a post extruder sensor, native_scope leaves
+            // the config to the python AFC: it calibrates against the buffer)
             return Ok((
                 true,
                 false,
@@ -1515,8 +1519,19 @@ impl AfcFunction {
             logger.info(c, &message);
             return Ok(());
         }
-        // (no espooler pins on the native scope's lanes)
-        Ok(())
+        let reactor = &afc.reactor;
+        logger.info(c, "Testing at full speed");
+        cur_lane.espooler.assist(-1.0)?;
+        reactor.pause(reactor.monotonic() + 1.0)?;
+        if cur_lane.espooler.rwd_is_pwm() {
+            for (msg, v) in [("Testing at 50 percent speed", -0.5), ("Testing at 30 percent speed", -0.3), ("Testing at 10 percent speed", -0.1)] {
+                logger.info(c, msg);
+                cur_lane.espooler.assist(v)?;
+                reactor.pause(reactor.monotonic() + 1.0)?;
+            }
+        }
+        logger.info(c, "Test routine complete");
+        cur_lane.espooler.assist(0.0)
     }
 }
 

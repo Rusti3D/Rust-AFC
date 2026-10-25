@@ -1,0 +1,17 @@
+# fake_moonraker
+# A spool into lane1 of the BoxTurtle (configs/boxturtle_min_flow.cfg: the
+# sensors follow the homing moves), then a tool load (T0) through the hub to
+# the toolhead sensor and into the extruder, and a tool unload back to the
+# lane. afc.cfg's welcome PREP is the only PREP (see btmin_insert)
+CONFIG ../configs/boxturtle_min_flow.cfg
+DICTIONARY atmega2560.dict Turtle_1=stm32h723.dict
+
+G4 P1000
+SET_KINEMATIC_POSITION X=100 Y=100 Z=10
+WAIT 6
+TEST_BUTTON PIN=^!Turtle_1:TRG1 STATE=1
+WAIT 6
+T0
+WAIT 3
+TOOL_UNLOAD LANE=lane1
+WAIT 3

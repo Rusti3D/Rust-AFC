@@ -12,7 +12,10 @@ import sys
 
 MODULES = ["AFC", "AFC_functions", "AFC_lane", "AFC_unit", "AFC_extruder", "AFC_hub",
            "AFC_prep", "AFC_error", "AFC_spool", "AFC_stats", "AFC_assist", "AFC_utils",
-           "AFC_logger", "AFC_respond", "AFC_canvas", "AFC_canvas_lane"]
+           "AFC_logger", "AFC_respond", "AFC_canvas", "AFC_canvas_lane",
+           "AFC_stepper", "AFC_BoxTurtle", "AFC_NightOwl", "AFC_QuattroBox", "AFC_led", "AFC_buffer",
+           "AFC_button", "AFC_form_tip", "AFC_poop", "AFC_HTLF", "AFC_Claymore", "AFC_EMU", "AFC_vivid",
+           "AFC_Toolchanger", "AFC_OpenAMS", "AFC_OAMS"]
 
 
 def ident(*parts):
@@ -50,7 +53,7 @@ def main():
     files = [src / (m + ".py") for m in MODULES] + [pathlib.Path(p) for p in sys.argv[2:]]
     for path in files:
         module, fname = path.stem, path.name
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         out = []
         walk(tree, module, fname, [], out)
         for name, f, func, line in out:
