@@ -1,6 +1,7 @@
 # fake_ace: --slots ready:PLA,empty,ready:PETG,empty
+# fake_moonraker
 # loads, unloads and tool changes (batch mode: ace_offline.cfg)
-CONFIG ../configs/ace_offline.cfg
+CONFIG ../configs/ace_runout.cfg
 DICTIONARY atmega2560.dict
 
 G4 P1000

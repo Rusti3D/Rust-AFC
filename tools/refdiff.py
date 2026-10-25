@@ -56,7 +56,7 @@ TMC_RUN = re.compile(rb"(?:^INFO:root:tmc \S+: [^\n]*\n)+", re.M)
 ACE_THREAD = re.compile(rb"^(?:INFO|DEBUG):root:AFC_ACE: [^\n]*\n", re.M)
 # afcDeltaTime: wall-clock durations of AFC's loads and unloads
 AFC_TIMES = [(re.compile(rb"\(\xce\x94t:\d+\.\d+s, t:\d+\.\d+\)"), "(Δt:<SECS>s, t:<SECS>)".encode()),
-             (re.compile(rb"( (?:done|toolhead|unloaded|loaded)[^\n]* t:)\d+\.\d+$", re.M), rb"\1<SECS>")]
+             (re.compile(rb"( (?:done|toolhead|unloaded|loaded|time)[^\n]* t:)\d+\.\d+$", re.M), rb"\1<SECS>")]
 # on a shutdown AFC_ACE queues its stops for the serial thread and the process
 # exits: how many go out before it does is a race
 ACE_SHUTDOWN_BURST = re.compile(rb"(?:^INFO:root:AFC_ACE: t=\S+ (?:stop_feed_filament|stop_unwind_filament|stop_feed_assist|drying_stop) [^\n]*\n)+\Z", re.M)

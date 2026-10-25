@@ -636,15 +636,17 @@ impl Moonraker {
     /// _log_async: the log call on the reactor thread
     fn log_async(&self, log_fn: LogFn, message: String, traceback: Option<String>) {
         let logger = self.logger.clone();
+        self.reactor.register_async_callback_local(move |_| Self::log_now(&logger, log_fn, &message, traceback.as_deref()), NOW);
+    }
+
+    /// The body of _log_async's callback (its lambda's frame in AFC.log)
+    fn log_now(logger: &AfcLogger, log_fn: LogFn, message: &str, traceback: Option<&str>) {
         let c = &AFC_UTILS_AFC_MOONRAKER__LOG_ASYNC_LAMBDA_488;
-        self.reactor.register_async_callback_local(
-            move |_| match log_fn {
-                LogFn::Error => logger.error_opt(c, &message, traceback.as_deref(), ""),
-                LogFn::Debug => logger.debug_opt(c, &message, false, traceback.as_deref()),
-                LogFn::Info => logger.info(c, &message),
-            },
-            NOW,
-        );
+        match log_fn {
+            LogFn::Error => logger.error_opt(c, message, traceback, ""),
+            LogFn::Debug => logger.debug_opt(c, message, false, traceback),
+            LogFn::Info => logger.info(c, message),
+        }
     }
 
     pub fn join_thread(&self) {
@@ -694,6 +696,8 @@ impl Moonraker {
             n.set(id + 1);
             id
         });
+        // (python's writer thread queues the failure's log callback before
+        // the result's: both run here, on the reactor thread, in that order)
         let cb: Box<dyn FnOnce(&Moonraker, JobResult)> = Box::new(move |m, r| {
             let log = || if print_error { LogFn::Error } else { LogFn::Debug };
             let result = match r {
@@ -705,10 +709,10 @@ impl Moonraker {
                 JobResult::Failed { cls, msg, status } => {
                     match status {
                         Some((s, reason)) => {
-                            m.log_async(log(), ERROR_STRING.into(), None);
-                            m.log_async(log(), format!("Response: {} Reason: {}", s, reason), None);
+                            Self::log_now(&m.logger, log(), ERROR_STRING, None);
+                            Self::log_now(&m.logger, log(), &format!("Response: {} Reason: {}", s, reason), None);
                         }
-                        None => m.log_async(log(), ERROR_STRING.into(), Some(http_traceback(&cls, &msg))),
+                        None => Self::log_now(&m.logger, log(), ERROR_STRING, Some(&http_traceback(&cls, &msg))),
                     }
                     None
                 }

@@ -31,12 +31,21 @@ plugin layer, unchanged.
 Ported against AFC 1.2.7 as COSMOS ships it. The plan and progress are in [STATUS.md](STATUS.md) and
 [docs/PLAN.md](docs/PLAN.md).
 
+## ACE configs
+
+`config/ace/` holds the configs of [cosmoace_afc](https://github.com/shawn-makes-stuff/cosmoace_afc) (Centauri
+Carbon 1 and 2, runout-sensor or toolhead-sensor path) as they run on a CC1 today. A distribution ships them
+next to its AFC base config (Rusticc: `extras-readonly/afc-ace/`); `printer.cfg` includes the entry file for
+the machine and path, e.g. `[include extras-readonly/afc-ace/cc1-toolhead.cfg]`.
+
 ## Parity testing
 
 `tools/afc_cmp.sh` runs each `tests/cases/*.test` with the Python AFC on Kalico and with `kaliru-afc` (kaliru
 plus this plugin, `src/main.rs`) in batch mode and compares them: the messages sent to the MCUs byte for
 byte, and klippy.log with only wall-clock and thread-timing values masked (`tools/refdiff.py`). Units with
-serial devices run against fakes (`tools/fake_ace.py`, an ACE Pro on a pseudo-terminal). Batch mode has no MCU
+serial devices run against fakes (`tools/fake_ace.py`, an ACE Pro on a pseudo-terminal), and
+`tools/fake_moonraker.py` answers AFC's Moonraker client (AFC creates its stats on connecting, and every load
+and unload updates them). Batch mode has no MCU
 replies, so motor moves and sensor changes beyond what fakes provide need real hardware.
 
 ```sh

@@ -16,6 +16,15 @@ Python AFC on kaliru's plugin layer stays the fallback until the port is complet
   offline loads/unloads/tool change, spool events + bypass). The Canvas (needs COSMOS's drv8833) is tested
   in Rusticc (canvas_cmp.sh).
 
+- ACE runout (2026-10-25), following cosmoace_afc 09b9cc3 (branch runout-fixes, local until the user
+  pushes it): reload of a paused runout lane (2f2abc9) armed only by a pause and dropped on resume, works
+  with unload_on_runout off; eject of a spent spool skips the empty-slot unwind (as OpenAMS); an unloaded
+  lane stays loadable; AFC_ACE_STOP keeps another lane's feed assist; the humidity sensor has get_temp
+  (TEMPERATURE_WAIT); failed Moonraker requests log before their callback runs (utils.rs). Parity 6/6,
+  twice: tools/afc_cmp.sh with ACE_SRC=<that checkout>; ace_runout(_keep) run runout -> pause -> new
+  spool -> load -> resume; tools/fake_moonraker.py gives AFC its stats so loads run to the end.
+- config/ace: the ACE configs as the user's CC1 runs them (cc1-toolhead.cfg).
+
 ## Queue
 - [x] 1. kaliru main: native plugin registration (a distro binary = kaliru + chosen plugin crates) and the
   AFC patches' kaliru-side hooks as public extension points. Evidence: kaliru gate unchanged.
@@ -32,9 +41,12 @@ Python AFC on kaliru's plugin layer stays the fallback until the port is complet
    (queuelogger) on kaliru's send(msg, sync).
 3. Evidence: Rusticc gate (cases, cc1, canvas_cmp 9/9, ace_cmp 4/4) unchanged.
 
-## Harness ideas
-- A minimal fake Moonraker (HTTP): Python AFC creates afc_stats on moonraker connect; batch runs without
-  it stop at the first TOOL_LOAD / UNLOAD's stats (AttributeError), cutting tool-change coverage short.
+## Known, not changed
+- AFC_ACE _motion_active reads the unit's "busy" as the slot's: with two slots of one ACE moving, a lost
+  reply on one is taken as started. Rare in use; kept as the python AFC has it.
+- A real-pin [AFC_hub] with runout off: the break check reaches AFC's handle_toolhead_runout, which reads
+  fila_tool_end (None without pin_tool_end): logged, no pause. The shipped configs use a virtual hub.
+- ACE 2, units: auto on a RESTART may count 0 while the old bus still holds the cable (exclusive open).
 
 ## Traps
 - No motion on the user's CC1 without the user present; coordinate with the Moonruster session.

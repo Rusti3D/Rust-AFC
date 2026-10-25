@@ -4,7 +4,10 @@
 # refdiff.py (serialqueue trace and exit identical, klippy.log identical after
 # masking wall clock / thread timing). A case whose first line is
 #   # fake_ace: <fake_ace.py options>
-# gets a fresh fake ACE Pro (tools/fake_ace.py) on its serial for each side.
+# gets a fresh fake ACE Pro (tools/fake_ace.py) on its serial for each side;
+# a "# fake_moonraker" line, a fake Moonraker (tools/fake_moonraker.py) on
+# 127.0.0.1:7199, for the AFC stats loads and unloads update. A case's
+# <name>.gcode beside it is put on the virtual SD card (SDCARD_PRINT_FILE).
 #
 # Needs (WSL): Kalico at ~/rk/kalico (KALICO), the reference venv ~/rk/venv315
 # (CPython 3.15 + Kalico's requirements + pyserial 3.5), the MCU dictionaries
@@ -21,15 +24,23 @@ STATE=/tmp/rust_afc_state
 K=$KALICO/klippy
 installed=()
 for f in "$AFC_SRC"/afc_extras/*.py; do cp "$f" $K/extras/; installed+=("$K/extras/$(basename "$f")"); done
-cp -r "$AFC_SRC/plugins/AFC_ACE" $K/plugins/ && installed+=("$K/plugins/AFC_ACE")
+# (ACE_SRC: a cosmoace_afc checkout; the port follows its commit 09b9cc3)
+cp -r "${ACE_SRC:-$AFC_SRC/plugins/AFC_ACE}" $K/plugins/AFC_ACE && installed+=("$K/plugins/AFC_ACE")
 fake=
-trap 'rm -rf "${installed[@]}" $STATE; [ -n "$fake" ] && kill $fake 2>/dev/null' EXIT
+mr=
+trap 'rm -rf "${installed[@]}" $STATE; kill $fake $mr 2>/dev/null' EXIT
 [ $# -eq 0 ] && set -- "$HERE"/tests/cases/*.test
 # a fresh state directory (AFC.var, the fake ACE's link) and fake ACE per run
 fresh() {
     if [ -n "$fake" ]; then kill $fake 2>/dev/null; wait $fake 2>/dev/null || true; fi
     fake=
+    if [ -n "$mr" ]; then kill $mr 2>/dev/null; wait $mr 2>/dev/null || true; fi
+    mr=
     rm -rf $STATE && mkdir -p $STATE
+    [ -f "${1%.test}.gcode" ] && cp "${1%.test}.gcode" $STATE/
+    if grep -q '^# fake_moonraker' "$1"; then
+        python3 "$HERE/tools/fake_moonraker.py" 7199 & mr=$!
+    fi
     local opts
     opts=$(sed -n '1s/^# fake_ace: //p' "$1")
     if [ -n "$opts" ]; then

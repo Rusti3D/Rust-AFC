@@ -97,6 +97,10 @@ impl PrinterObject for AceHumidity {
             "temperature" => PyVal::Float(kaliru::pyfmt::py_round(self.temperature.get(), 1)),
         }))
     }
+    // TEMPERATURE_WAIT SENSOR= reads any listed sensor through get_temp
+    fn get_temp(&self, _eventtime: f64) -> Option<(f64, f64)> {
+        Some((self.temperature.get(), 0.0))
+    }
 }
 
 /// The ACE unit's part (afcACE)
@@ -135,6 +139,9 @@ pub struct AceUnit {
     poll_timer: RefCell<Option<Timer>>,
     log_throttle: RefCell<HashMap<String, f64>>,
     tail_pending: RefCell<Vec<String>>,
+    /// Lane whose runout paused the print (no runout lane): a new spool in
+    /// it is loaded and purged, and the user only presses resume
+    reload_lane: RefCell<Option<String>>,
     assist_slot: Cell<Option<i64>>,
     assist_gen: Cell<Option<u64>>,
     gears_engaged: Cell<bool>,
@@ -310,6 +317,7 @@ pub fn load_config_prefix(config: &ConfigWrapper) -> KResult<PObj> {
             poll_timer: RefCell::new(None),
             log_throttle: RefCell::new(HashMap::new()),
             tail_pending: RefCell::new(vec![]),
+            reload_lane: RefCell::new(None),
             assist_slot: Cell::new(None),
             assist_gen: Cell::new(None),
             gears_engaged: Cell::new(false),
@@ -1145,6 +1153,10 @@ fn poll_status_inner(unit: &AfcUnit, eventtime: f64) -> KResult<f64> {
     if a.operation_active.get() || a.transport.borrow().is_none() {
         return Ok(eventtime + 2.0);
     }
+    if a.reload_lane.borrow().is_some() && !unit.afc.function.is_paused()? {
+        // Resumed (or cancelled) without a new spool in that lane
+        *a.reload_lane.borrow_mut() = None;
+    }
     // Hub-path occupancy is AFC's own state: derive it from tool_loaded
     for (name, lane) in unit.lanes.borrow().iter() {
         if a.slot_map.borrow().contains_key(name) {
@@ -1256,6 +1268,19 @@ fn sync_lane(unit: &AfcUnit, lane_name: &str, lane: &Rc<AfcLane>, slot: i64, sta
             seed_spool_weight(unit, lane);
             apply_rfid(lane, &slot_info(slot, Some(status)), true)?;
             publish_lane(unit, lane);
+            if a.reload_lane.borrow().as_deref() == Some(lane_name) {
+                *a.reload_lane.borrow_mut() = None;
+                let loaded = lane.extruder_obj()?.lane_loaded.borrow().clone();
+                if unit.afc.function.is_paused()? && loaded.as_deref().is_none_or(|l| l == lane_name) {
+                    if loaded.is_some() {
+                        // The pause left the spent spool booked in
+                        // (unload_on_runout off): book it out as an unload
+                        // of a spent spool does
+                        tail_unload(unit, lane, slot)?;
+                    }
+                    reload(unit, lane_name);
+                }
+            }
         } else if lane.tool_loaded.get() {
             // Spool ran out while loaded: print out the tail first
             unit.afc.logger.info(c, &format!("{}: {} spool ran out — printing out the tail, endless-spool swap fires when the hub sensor clears", unit.name, lane_name));
@@ -1304,9 +1329,30 @@ fn sync_lane(unit: &AfcUnit, lane_name: &str, lane: &Rc<AfcLane>, slot: i64, sta
             }
             unit.afc.logger.info(c, &format!("{}: {} tail passed the {} — starting swap", unit.name, lane_name, sensor.as_ref().map_or("path", |(k, _)| *k)));
             lane.handle_load_runout(eventtime, false)?;
+            // A runout that paused (no runout lane): a new spool in this
+            // lane is loaded (see reload) while the pause lasts
+            if lane.runout_lane.borrow().is_none() && unit.afc.function.is_paused()? {
+                *a.reload_lane.borrow_mut() = Some(lane_name.to_string());
+            }
         }
     }
     Ok(())
+}
+
+/// _reload: load and purge a spool put into the lane whose runout paused
+/// the print, off the status timer (TOOL_LOAD runs for minutes and polls the
+/// ACE itself); the head goes back to the saved print position on resume
+fn reload(unit: &AfcUnit, lane_name: &str) {
+    unit.afc.logger.info(&AFC_ACE_AFCACE__RELOAD, &format!("{}: new spool in {} — loading it; press resume when the purge is done", unit.name, lane_name));
+    let (afc, name, lane_name) = (unit.afc.clone(), unit.name.clone(), lane_name.to_string());
+    unit.afc.reactor.register_callback(
+        move |_| {
+            if let Err(e) = afc.gcode.run_script(&format!("TOOL_LOAD LANE={}", lane_name)) {
+                afc.logger.error(&AFC_ACE_AFCACE__RELOAD_RUN, &format!("{}: loading {} failed: {}. Load it by hand, then resume.", name, lane_name, e.message()));
+            }
+        },
+        kaliru::reactor::NOW,
+    );
 }
 
 /// _apply_rfid: a slot's tag (material, color) onto its lane
@@ -1458,6 +1504,22 @@ pub fn check_runout(unit: &AfcUnit, cur_lane: &AfcLane) -> KResult<bool> {
 }
 
 pub fn eject_lane(unit: &AfcUnit, lane: &Rc<AfcLane>) -> KResult<()> {
+    let slot = ace(unit).slot_map.borrow().get(&lane.name).copied();
+    let status = match slot {
+        Some(_) => get_status(unit, 0.0, 0.0, false)?,
+        None => None,
+    };
+    if let (Some(slot), Some(status)) = (slot, status.as_ref()) {
+        if slot_info(slot, Some(status)).contains_key("status") && !slot_present(slot, Some(status)) {
+            // A spent spool (a runout with unload_on_runout ejects it): the
+            // ACE no longer grips its end, so there is nothing to retract,
+            // as OpenAMS skips the hardware unload of an empty spool
+            lane.loaded_to_hub.set(false);
+            lane.load_state_raw.set(false);
+            unit.afc.logger.info(&AFC_ACE_AFCACE_EJECT_LANE, &format!("Lane {} is empty: nothing to retract. Remove the empty spool from {}.", lane.name, unit.name));
+            return Ok(());
+        }
+    }
     if reset_lane(unit, lane)? {
         unit.afc.logger.info(
             &AFC_ACE_AFCACE_EJECT_LANE,
@@ -1750,7 +1812,9 @@ pub fn unit_unload_lane(unit: &AfcUnit, cur_lane: &Rc<AfcLane>, cur_extruder: &A
             afc.error.handle_lane_failure(c, cur_lane, &format!("ACE retract failed for {}: {}", cur_lane.name, msg), afc.function.in_print()?)?;
             return Ok(false);
         }
-        cur_lane.loaded_to_hub.set(false);
+        // The spool is still in its slot and the tip parked behind the
+        // merger: staged and loadable, as the status poll keeps it
+        cur_lane.loaded_to_hub.set(true);
         cur_lane.load_state_raw.set(false);
         afc.delta_time.log_with_time(c, "ACE retract complete", true);
         if let Some(m) = &afc.post_unload_macro {
@@ -2022,7 +2086,12 @@ fn cmd_stop(unit: &Rc<AfcUnit>, gcmd: &GCodeCommand) -> KResult<()> {
     };
     stop_motion(unit, slot, "stop_feed_filament")?;
     stop_motion(unit, slot, "stop_unwind_filament")?;
-    set_assist(unit, slot, false)
+    if ace(unit).assist_slot.get() == Some(slot) {
+        set_assist(unit, slot, false)
+    } else {
+        // Another lane's print-time assist stays wanted
+        stop_motion(unit, slot, "stop_feed_assist").map(|_| ())
+    }
 }
 
 fn cmd_reset(unit: &Rc<AfcUnit>, gcmd: &GCodeCommand) -> KResult<()> {
