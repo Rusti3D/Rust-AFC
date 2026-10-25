@@ -696,8 +696,9 @@ impl Moonraker {
             n.set(id + 1);
             id
         });
-        // (python's writer thread queues the failure's log callback before
-        // the result's: both run here, on the reactor thread, in that order)
+        // (python's writer thread queues its log calls and result callbacks
+        // in one FIFO: a job's all run here, on the reactor thread, in order,
+        // before the next job's)
         let cb: Box<dyn FnOnce(&Moonraker, JobResult)> = Box::new(move |m, r| {
             let log = || if print_error { LogFn::Error } else { LogFn::Debug };
             let result = match r {
@@ -796,7 +797,7 @@ impl Moonraker {
             req,
             Box::new(move |m, r| {
                 if r.is_none() {
-                    m.log_async(LogFn::Error, format!("Error when trying to update {} in moonraker, see AFC.log for more info", key), None);
+                    Self::log_now(&m.logger, LogFn::Error, &format!("Error when trying to update {} in moonraker, see AFC.log for more info", key), None);
                 }
             }),
             true,
@@ -809,17 +810,11 @@ impl Moonraker {
             req,
             Box::new(move |m, r| {
                 if r.is_none() {
-                    m.log_async(LogFn::Info, format!("SpoolID: {} not found", id), None);
+                    Self::log_now(&m.logger, LogFn::Info, &format!("SpoolID: {} not found", id), None);
                 }
-                let m = m.rc();
-                m.reactor.register_async_callback_local(
-                    move |_| {
-                        if let Err(e) = callback(r) {
-                            kaliru::logging::exception_err("AFC spoolman", &e);
-                        }
-                    },
-                    NOW,
-                );
+                if let Err(e) = callback(r) {
+                    kaliru::logging::exception_err("AFC spoolman", &e);
+                }
             }),
             true,
         );
@@ -880,7 +875,7 @@ impl Moonraker {
             req,
             Box::new(|m, r| {
                 if r.is_none() {
-                    m.log_async(LogFn::Error, "Error sending lane data, check AFC.log for more information".into(), None);
+                    Self::log_now(&m.logger, LogFn::Error, "Error sending lane data, check AFC.log for more information", None);
                 }
             }),
             true,
@@ -894,7 +889,7 @@ impl Moonraker {
             Some("DELETE"),
         );
         let (ns, k) = (namespace.to_string(), key.to_string());
-        self.queue(req, Box::new(move |m, _| m.log_async(LogFn::Debug, format!("Removing {} from {}", k, ns), None)), false);
+        self.queue(req, Box::new(move |m, _| Self::log_now(&m.logger, LogFn::Debug, &format!("Removing {} from {}", k, ns), None)), false);
     }
 
     /// Removes the lane_data namespace (stale lanes from another setup)
