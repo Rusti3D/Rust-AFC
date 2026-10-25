@@ -24,8 +24,8 @@ STATE=/tmp/rust_afc_state
 K=$KALICO/klippy
 installed=()
 for f in "$AFC_SRC"/afc_extras/*.py; do cp "$f" $K/extras/; installed+=("$K/extras/$(basename "$f")"); done
-# (ACE_SRC: a cosmoace_afc checkout; the port follows its commit 09b9cc3)
-cp -r "${ACE_SRC:-$AFC_SRC/plugins/AFC_ACE}" $K/plugins/AFC_ACE && installed+=("$K/plugins/AFC_ACE")
+# (the AFC_ACE unit the native ACE follows: tests/reference/AFC_ACE, or ACE_SRC)
+cp -r "${ACE_SRC:-$HERE/tests/reference/AFC_ACE}" $K/plugins/AFC_ACE && installed+=("$K/plugins/AFC_ACE")
 fake=
 mr=
 trap 'rm -rf "${installed[@]}" $STATE; kill $fake $mr 2>/dev/null' EXIT

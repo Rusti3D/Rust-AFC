@@ -16,12 +16,11 @@ Python AFC on kaliru's plugin layer stays the fallback until the port is complet
   offline loads/unloads/tool change, spool events + bypass). The Canvas (needs COSMOS's drv8833) is tested
   in Rusticc (canvas_cmp.sh).
 
-- ACE runout (2026-10-25), following cosmoace_afc 09b9cc3 (branch runout-fixes, local until the user
-  pushes it): reload of a paused runout lane (2f2abc9) armed only by a pause and dropped on resume, works
+- ACE runout (2026-10-25), following tests/reference/AFC_ACE (the python unit, kept here): reload of a paused runout lane (2f2abc9) armed only by a pause and dropped on resume, works
   with unload_on_runout off; eject of a spent spool skips the empty-slot unwind (as OpenAMS); an unloaded
   lane stays loadable; AFC_ACE_STOP keeps another lane's feed assist; the humidity sensor has get_temp
   (TEMPERATURE_WAIT); failed Moonraker requests log before their callback runs (utils.rs). Parity 6/6,
-  twice: tools/afc_cmp.sh with ACE_SRC=<that checkout>; ace_runout(_keep) run runout -> pause -> new
+  twice: tools/afc_cmp.sh; ace_runout(_keep) run runout -> pause -> new
   spool -> load -> resume; tools/fake_moonraker.py gives AFC its stats so loads run to the end.
 - config/ace: the ACE configs as the user's CC1 runs them (cc1-toolhead.cfg).
 
