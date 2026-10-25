@@ -1,0 +1,12 @@
+# fake_ace: --slots ready:PLA,empty,ready:PETG,empty --speedup 1 --events 1:1:ready:PETG,4:0:empty
+# a spool put in and one taken out while a slow lane move runs (the status
+# poll's insert / removal handling), then the bypass switch both ways
+CONFIG ../configs/ace_offline.cfg
+DICTIONARY atmega2560.dict
+
+G4 P1000
+PREP
+LANE_MOVE LANE=lane3 DISTANCE=250
+AFC_ACE_STATUS UNIT=ACE_1
+AFC_ACE_BYPASS ENABLE=1
+AFC_ACE_BYPASS ENABLE=0

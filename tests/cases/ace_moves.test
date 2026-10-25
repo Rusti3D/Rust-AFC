@@ -1,0 +1,14 @@
+# fake_ace: --slots ready:PLA,empty,ready:PETG,empty
+# lane moves forward / back, the reset retract and park, stop, unknown lanes
+CONFIG ../configs/ace.cfg
+DICTIONARY atmega2560.dict
+
+G4 P1000
+PREP
+LANE_MOVE LANE=lane1 DISTANCE=50
+LANE_MOVE LANE=lane1 DISTANCE=-50
+LANE_MOVE LANE=lane3 DISTANCE=-400
+AFC_ACE_RESET UNIT=ACE_1 LANE=lane3
+AFC_ACE_RESET UNIT=ACE_1 LANE=lane9
+AFC_ACE_STOP UNIT=ACE_1 LANE=lane1
+AFC_ACE_STOP UNIT=ACE_1 LANE=lane9

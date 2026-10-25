@@ -1,0 +1,13 @@
+# fake_ace: --slots ready:PLA,empty,ready:PETG,empty
+# loads, unloads and tool changes (batch mode: ace_offline.cfg)
+CONFIG ../configs/ace_offline.cfg
+DICTIONARY atmega2560.dict
+
+G4 P1000
+PREP
+G28
+T0
+TOOL_UNLOAD
+CHANGE_TOOL LANE=lane3
+T0
+T1

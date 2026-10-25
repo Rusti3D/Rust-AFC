@@ -1,0 +1,39 @@
+[package]
+name = "rust-afc"
+version = "0.1.0"
+edition = "2021"
+description = "AFC (Armored Turtle's Automated Filament Control) as a native kaliru plugin"
+license = "GPL-3.0-only"
+repository = "https://github.com/Rusti3D/Rust-AFC"
+
+[lib]
+name = "rust_afc"
+path = "src/lib.rs"
+
+# kaliru with this plugin: what the parity harness runs
+[[bin]]
+name = "kaliru-afc"
+path = "src/main.rs"
+
+[dependencies]
+# a kaliru commit with the native plugin API (docs/PLUGINS.md "Native plugins")
+kaliru = { git = "https://github.com/Rusti3D/kaliru", rev = "d0f37ad3c1592d798e327fa2b3fcea2cd580b148" }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+libc = "0.2"
+
+[lints.clippy]
+# as in kaliru: ports keep the python source's shapes and spellings
+excessive_precision = "allow"
+neg_cmp_op_on_partial_ord = "allow"
+manual_clamp = "allow"
+needless_range_loop = "allow"
+new_ret_no_self = "allow"
+wrong_self_convention = "allow"
+type_complexity = "allow"
+
+[profile.release]
+# kaliru's: small binaries for printer hosts
+opt-level = "s"
+strip = true
+lto = true
+codegen-units = 1

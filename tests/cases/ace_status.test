@@ -1,0 +1,15 @@
+# fake_ace: --slots ready:PLA,empty,ready:PETG,empty
+# PREP, raw status, the dryer by command and as a heater (TURN_OFF_HEATERS
+# must not stop it), lane state queries
+CONFIG ../configs/ace.cfg
+DICTIONARY atmega2560.dict
+
+G4 P1000
+PREP
+AFC_ACE_STATUS UNIT=ACE_1
+AFC_ACE_DRYER_START UNIT=ACE_1 TEMP=50 DURATION=60
+SET_HEATER_TEMPERATURE HEATER=ace_dryer_ACE_1 TARGET=55
+TURN_OFF_HEATERS
+AFC_ACE_DRYER_STOP UNIT=ACE_1
+AFC_STATUS
+SHOW_AFC
