@@ -29,16 +29,20 @@ Python AFC on kaliru's plugin layer stays the fallback until the port is complet
   AFC patches' kaliru-side hooks as public extension points. Evidence: kaliru gate unchanged.
 - [x] 2. Rust-AFC crate: the existing native AFC (Canvas, ACE) moved here, with its parity harness.
   Evidence: ACE 4/4 here; Canvas 9/9 is re-checked in step 3 (Rusticc).
-- [ ] 3. Rusticc builds kaliru + Rust-AFC; patches 0021/0022 dropped. Evidence: Rusticc gate unchanged.
+- [x] 3. Rusticc builds kaliru + Rust-AFC; patches 0021/0022 dropped. Evidence: Rusticc gate unchanged
+  (cases 171/172, cc1 1/1, canvas 9/9, ace 4/4, plugin_cmp 8/8); installed on the user's CC1 (Rusticc
+  3904616fee, Rust-AFC 3ea26b1): native AFC, 4/4 ACE lanes SPOOL READY, no libpython loaded.
 - [ ] 4. The rest of AFC, module by module (docs/PLAN.md), each with parity scenarios against Python AFC.
 
-## Next (step 3)
-1. rusticc-distro: a small binary crate (kaliru with Rusticc's patches + rust-afc, Cargo [patch] so
-   rust-afc's kaliru is the patched tree); build_cc1.sh / the recipe build it.
-2. Rusticc patches: drop 0021/0022 (now kaliru d0f37ad + this crate); new: drv8833 answers call_method
-   (drv8833_move, drv8833_set_speed, active) for the Canvas (src/afc/canvas.rs Drv8833); refit 0018/0019
-   (queuelogger) on kaliru's send(msg, sync).
-3. Evidence: Rusticc gate (cases, cc1, canvas_cmp 9/9, ace_cmp 4/4) unchanged.
+## Next (step 4)
+1. Port module by module from docs/PLAN.md's table, Python AFC 1.2.7 (Originals_Base/addons/afc_extras) as the
+   reference: AFC_stepper and the lane / unit / extruder / assist parts the stepper units use first (BoxTurtle
+   family), then buffer, led, button, form_tip, poop; then HTLF, Claymore, EMU, ViViD, Toolchanger, OpenAMS.
+   native_scope (src/afc/scope.rs) widens with each one; anything outside it keeps running as Python AFC.
+2. Each with parity cases in tests/cases (fake hardware where a unit has a serial device, fake_moonraker for
+   loads), tools/afc_cmp.sh identical, then Rusticc's gate.
+3. kaliru gap to fix on the way: chelper.get_ffi() is not mirrored (AFC_stepper's python path needs it).
+4. Untested on hardware: the ACE runout -> pause -> new spool -> load -> resume flow; watch the first one.
 
 ## Known, not changed
 - AFC_ACE _motion_active reads the unit's "busy" as the slot's: with two slots of one ACE moving, a lost
