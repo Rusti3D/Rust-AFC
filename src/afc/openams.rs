@@ -46,7 +46,6 @@ const MONITOR_INTERVAL_IDLE: f64 = 4.0;
 const STUCK_PRESSURE_CLEAR: f64 = 0.12;
 const STUCK_DWELL: f64 = 2.0;
 const STUCK_MIN_ENCODER: i64 = 3;
-const CLOG_POST_LOAD_GRACE: f64 = 12.0;
 
 /// CLOG_SENSITIVITY: None turns clog detection off
 fn clog_sensitivity(name: &str) -> Option<f64> {
@@ -294,17 +293,10 @@ impl OamsMonitor {
         Ok(())
     }
 
-    /// _check_clog: needs the active extruder's position from the FPS
-    /// buffer, and AFCFPSBuffer has no `extruder` attribute, so after the
-    /// post-load grace there is never a position to compare
-    fn check_clog(&self, eventtime: f64) {
-        let st = self.state.borrow();
-        if let Some(t) = st.last_lane_change_time.filter(|t| *t != 0.0) {
-            if eventtime - t < CLOG_POST_LOAD_GRACE {
-                return;
-            }
-        }
-    }
+    /// _check_clog: it compares the active extruder's position, read from
+    /// the FPS buffer's `extruder` attribute, which AFCFPSBuffer does not
+    /// have: before and after its post-load grace it returns with nothing done
+    fn check_clog(&self, _eventtime: f64) {}
 }
 
 /// FollowerController: the follower motor and error LEDs of one OAMS
