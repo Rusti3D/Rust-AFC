@@ -974,7 +974,8 @@ impl AfcUnit {
     pub fn move_to_hub_assist(&self, lane: &Rc<AfcLane>, dist: f64, dir: MoveDirection, use_homing: bool, speed_mode: SpeedMode, assist_active: AssistActive) -> KResult<(bool, f64, MoveWarning)> {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_move_to_hub(self, lane, dist, dir, use_homing, speed_mode),
-            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => lane.move_to(dist * dir.value(), speed_mode, &lane.hub_endstop_name(), assist_active, use_homing),
+            UnitKind::BoxTurtle(_) => super::boxturtle::unit_move_to_hub(self, lane, dist, dir, use_homing, speed_mode, assist_active),
+            UnitKind::Ace(_) => lane.move_to(dist * dir.value(), speed_mode, &lane.hub_endstop_name(), assist_active, use_homing),
         }
     }
 

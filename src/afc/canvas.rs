@@ -433,9 +433,10 @@ fn run_post_cut_macros(lane: &AfcLane) -> KResult<()> {
             afc.gcode.run_script_from_command(&format!("{} EXTRUDER={}", super::py_opt_str(afc.park_cmd.as_deref()), ext.name))?;
         }
         if afc.form_tip_cmd.as_deref() == Some("AFC") {
-            return Err(no_attr("NoneType", "tip_form"));
+            afc.printer.lookup::<super::form_tip::FormTip>("AFC_form_tip")?.tip_form()?;
+        } else {
+            afc.gcode.run_script_from_command(&super::py_opt_str(afc.form_tip_cmd.as_deref()))?;
         }
-        afc.gcode.run_script_from_command(&super::py_opt_str(afc.form_tip_cmd.as_deref()))?;
     }
     Ok(())
 }

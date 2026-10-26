@@ -18,12 +18,14 @@ use std::rc::Rc;
 
 const MAX_NUM_MOVES: i64 = 40;
 
-/// Which BoxTurtle-family unit (all are afcBoxTurtle with their own logo)
+/// Which BoxTurtle-family unit (all are afcBoxTurtle with their own logo;
+/// EMU also loads, homes to the hub and ejects its own way)
 #[derive(Clone, Copy, PartialEq)]
 pub enum Family {
     BoxTurtle,
     NightOwl,
     QuattroBox,
+    Emu,
 }
 
 /// A python number in a message: an int stays "0", a float is "0.0"
@@ -76,6 +78,7 @@ fn make(config: &ConfigWrapper, family: Family) -> KResult<PObj> {
             Family::BoxTurtle => "Box_Turtle",
             Family::NightOwl => "Night_Owl",
             Family::QuattroBox => "Quattro_Box",
+            Family::Emu => "EMU",
         };
         let type_name = config.get("type", default_type)?;
         Ok((UnitKind::BoxTurtle(family), type_name))
@@ -93,6 +96,21 @@ pub fn load_config_prefix_night_owl(config: &ConfigWrapper) -> KResult<PObj> {
 
 pub fn load_config_prefix_quattro_box(config: &ConfigWrapper) -> KResult<PObj> {
     make(config, Family::QuattroBox)
+}
+
+pub fn load_config_prefix_emu(config: &ConfigWrapper) -> KResult<PObj> {
+    make(config, Family::Emu)
+}
+
+/// an EMU's virtual hub: no hub switch, the load switch stands in
+fn emu_virtual_hub(unit: &AfcUnit, lane: &AfcLane) -> bool {
+    matches!(unit.kind, UnitKind::BoxTurtle(Family::Emu)) && lane.hub_obj_opt().is_some_and(|h| h.is_virtual_pin())
+}
+
+/// move_to_hub: to the hub switch (an EMU with a virtual hub: the load switch)
+pub fn unit_move_to_hub(unit: &AfcUnit, lane: &Rc<AfcLane>, dist: f64, dir: MoveDirection, use_homing: bool, speed_mode: SpeedMode, assist_active: AssistActive) -> KResult<(bool, f64, MoveWarning)> {
+    let endstop = if emu_virtual_hub(unit, lane) { lane.load_es() } else { lane.hub_endstop_name() };
+    lane.move_to(dist * dir.value(), speed_mode, &endstop, assist_active, use_homing)
 }
 
 /// handle_connect: the unit's logos
@@ -126,6 +144,7 @@ pub fn unit_handle_connect(unit: &AfcUnit, family: Family) {
             (logo, "<span class=error--text>Night Owl Not Ready</span>\n".to_string())
         }
         Family::QuattroBox => ("<span class=success--text>Quattro Box Ready</span>".to_string(), "<span class=error--text>Quattro Box Not Ready</span>\n".to_string()),
+        Family::Emu => ("<span class=success--text>EMU Ready\n</span>".to_string(), "<span class=error--text>EMU Not Ready</span>\n".to_string()),
     };
     *unit.logo.borrow_mut() = logo;
     *unit.logo_error.borrow_mut() = logo_error;
@@ -688,8 +707,19 @@ pub fn unit_prep_load(unit: &AfcUnit, lane: &Rc<AfcLane>) -> KResult<()> {
     Ok(())
 }
 
-/// prep_post_load: on to the hub (load_to_hub) once the spool is in
-pub fn unit_prep_post_load(_unit: &AfcUnit, lane: &Rc<AfcLane>) -> KResult<()> {
+/// prep_post_load: on to the hub (load_to_hub) once the spool is in; an
+/// EMU with a virtual hub backs off its load switch instead
+pub fn unit_prep_post_load(unit: &AfcUnit, lane: &Rc<AfcLane>) -> KResult<()> {
+    if emu_virtual_hub(unit, lane) {
+        let clear = lane.hub_obj()?.hub_clear_move_dis();
+        let mut num_tries = 0;
+        while lane.raw_load_state() && num_tries < 10 {
+            lane.move_to(clear * MoveDirection::Neg.value(), SpeedMode::Short, &super::lane::Endstop::None, AssistActive::No, false)?;
+            num_tries += 1;
+        }
+        lane.loaded_to_hub.set(true);
+        return Ok(());
+    }
     if !lane.is_direct_hub() && lane.load_to_hub && !lane.loaded_to_hub.get() && lane.load_state() && lane.prep_state.get() {
         let (speed, accel) = {
             let s = lane.settings();
@@ -706,6 +736,15 @@ pub fn unit_prep_post_load(_unit: &AfcUnit, lane: &Rc<AfcLane>) -> KResult<()> {
 pub fn unit_eject_lane(unit: &AfcUnit, lane: &Rc<AfcLane>) -> KResult<()> {
     let c = &AFC_BOXTURTLE_AFCBOXTURTLE_EJECT_LANE;
     let afc = &unit.afc;
+    if matches!(unit.kind, UnitKind::BoxTurtle(Family::Emu)) {
+        // EMU: back to the load switch, then clear of the extruder
+        if lane.loaded_to_hub.get() {
+            lane.move_to(-lane.dist_hub.get(), SpeedMode::DistHub, &lane.load_es(), AssistActive::Dynamic, afc.homing_enabled)?;
+        }
+        let clear = lane.settings().extruder_clear_dis.unwrap_or(0.0);
+        lane.move_advanced(-clear, SpeedMode::Short, AssistActive::No)?;
+        return lane.do_enable(false);
+    }
     let r = (|| -> KResult<()> {
         if lane.loaded_to_hub.get() {
             lane.move_to(-lane.dist_hub.get(), SpeedMode::DistHub, &lane.load_es(), AssistActive::Dynamic, afc.homing_enabled)?;

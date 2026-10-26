@@ -17,7 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 # a kaliru commit with the native plugin API (docs/PLUGINS.md "Native plugins")
-kaliru = { git = "https://github.com/Rusti3D/kaliru", rev = "d0f37ad3c1592d798e327fa2b3fcea2cd580b148" }
+kaliru = { git = "https://github.com/Rusti3D/kaliru", rev = "702ecb01477a6175478f34ac6a8c5d802cf448e8" }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 libc = "0.2"
 

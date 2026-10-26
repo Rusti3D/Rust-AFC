@@ -1,0 +1,19 @@
+# fake_moonraker
+# lane1's AFC_button (configs/boxturtle_m2.cfg) on an idle printer, before
+# anything moved (in batch mode a move keeps idle_timeout "Printing", and a
+# button then refuses): a short press asks for a tool load of the (empty)
+# lane, which AFC refuses (pausing, so the toolhead moves); a long press is
+# then refused (bt_button_long has it)
+CONFIG ../configs/boxturtle_m2.cfg
+DICTIONARY atmega2560.dict Turtle_1=stm32h723.dict
+
+G4 P1000
+WAIT 6
+TEST_BUTTON PIN=^Turtle_1:SW6 STATE=1
+WAIT 0.3
+TEST_BUTTON PIN=^Turtle_1:SW6 STATE=0
+WAIT 2
+TEST_BUTTON PIN=^Turtle_1:SW6 STATE=1
+WAIT 1.5
+TEST_BUTTON PIN=^Turtle_1:SW6 STATE=0
+WAIT 3

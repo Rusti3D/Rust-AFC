@@ -5,7 +5,7 @@ use kaliru::configfile::ConfigWrapper;
 use kaliru::error::KResult;
 
 /// The AFC modules the native AFC replaces (klippy/extras names)
-pub const NATIVE_MODULES: [&str; 17] = [
+pub const NATIVE_MODULES: [&str; 21] = [
     "AFC",
     "AFC_functions",
     "AFC_spool",
@@ -21,8 +21,12 @@ pub const NATIVE_MODULES: [&str; 17] = [
     "AFC_BoxTurtle",
     "AFC_NightOwl",
     "AFC_QuattroBox",
+    "AFC_EMU",
     "AFC_led",
     "AFC_buffer",
+    "AFC_button",
+    "AFC_form_tip",
+    "AFC_poop",
 ];
 
 /// Ok(()) when every AFC section is one the native AFC ports, else why not
@@ -55,12 +59,7 @@ pub fn native_scope(config: &ConfigWrapper) -> KResult<Result<(), String>> {
             return Ok(Err(format!("[{}]", s)));
         }
         match module {
-            "AFC" => {
-                afc = true;
-                if opt(s, "form_tip_cmd").as_deref() == Some("AFC") {
-                    return Ok(Err("form_tip_cmd AFC".into()));
-                }
-            }
+            "AFC" => afc = true,
             "AFC_extruder" => {
                 for o in ["toolchanger_unit", "tool", "u1_filament_sensor_name", "u1_park_detector_name", "led_name", "status_led_idx", "nozzle_led_idx", "buffer"] {
                     if opt(s, o).is_some() {

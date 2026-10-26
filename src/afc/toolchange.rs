@@ -319,11 +319,12 @@ impl Afc {
                 self.function.log_toolhead_pos("")?;
             }
             if self.form_tip_cmd.as_deref() == Some("AFC") {
-                // (native_scope leaves form_tip_cmd AFC to the python AFC)
-                return Err(no_attr("afc", "tip"));
+                self.printer.lookup::<super::form_tip::FormTip>("AFC_form_tip")?.tip_form()?;
+                self.delta_time.log_with_time(c, "TOOL_UNLOAD: After afc form tip", true);
+            } else {
+                self.gcode.run_script_from_command(&py_opt_str(self.form_tip_cmd.as_deref()))?;
+                self.delta_time.log_with_time(c, "TOOL_UNLOAD: After custom form tip", true);
             }
-            self.gcode.run_script_from_command(&py_opt_str(self.form_tip_cmd.as_deref()))?;
-            self.delta_time.log_with_time(c, "TOOL_UNLOAD: After custom form tip", true);
             self.function.log_toolhead_pos("")?;
         }
         Ok(())

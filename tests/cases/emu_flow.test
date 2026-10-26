@@ -1,0 +1,25 @@
+# fake_moonraker
+# An EMU (configs/emu_flow.cfg: virtual hub, sensors following the homing
+# moves): a spool into lane1 is loaded and backed off its load switch
+# (EMU's prep_post_load for a virtual hub; its plain moves follow no sensor,
+# so the load switch is then cleared as backing off clears it), then a tool
+# load whose hub move homes to the load switch, the unload, and an eject
+CONFIG ../configs/emu_flow.cfg
+DICTIONARY atmega2560.dict Turtle_1=stm32h723.dict
+
+G4 P1000
+SET_KINEMATIC_POSITION X=100 Y=100 Z=10
+WAIT 6
+TEST_BUTTON PIN=^!Turtle_1:TRG1 STATE=1
+WAIT 6
+TEST_BUTTON PIN=^Turtle_1:EXT1 STATE=0
+WAIT 1
+T0
+WAIT 3
+TEST_BUTTON PIN=^PK1 STATE=0
+WAIT 2
+TOOL_UNLOAD LANE=lane1
+WAIT 3
+LANE_UNLOAD LANE=lane1
+WAIT 3
+AFC_STATUS
