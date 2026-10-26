@@ -33,10 +33,13 @@ const CMD_QUERY_BUFFER_HELP: &str = "Report Buffer sensor state";
 pub struct AfcBuffer {
     me: Weak<AfcBuffer>,
     printer: Rc<Printer>,
-    afc: Rc<Afc>,
-    reactor: Rc<Reactor>,
+    pub afc: Rc<Afc>,
+    pub reactor: Rc<Reactor>,
     pub name: String,
-    kind: String,
+    pub kind: String,
+    pub debug: bool,
+    /// type FPS_PSF: the analog sensor's part (fps.rs)
+    pub fps: Option<super::fps::Fps>,
     pub lanes: RefCell<IndexMap<String, Rc<AfcLane>>>,
     last_state: RefCell<String>,
     enable: Cell<bool>,
@@ -54,6 +57,7 @@ pub struct AfcBuffer {
     led_index: Option<String>,
     led_advancing: String,
     led_trailing: String,
+    led_neutral: String,
     led_buffer_disabled: String,
     pub advance_pin: Option<String>,
     multiplier_high: RefCell<PyVal>,
@@ -82,7 +86,7 @@ impl AfcBuffer {
         let kind = config.get("type", "switched")?;
         let function = printer.lookup_or_load::<super::functions::AfcFunction>(config, "AFC_functions")?;
         let name = config.get_name().split(' ').next_back().unwrap_or("").to_string();
-        let _debug = config.getboolean("debug", false)?;
+        let debug = config.getboolean("debug", false)?;
         let enable_sensors_in_gui = config.getboolean("enable_sensors_in_gui", afc.enable_sensors_in_gui)?;
         let buttons = printer.lookup_or_load::<PrinterButtons>(config, "buttons")?;
         // error sensitivity, 0 disables, 1 is the least, 10 is the most
@@ -94,7 +98,7 @@ impl AfcBuffer {
         let led_index = config.get_opt("led_index")?;
         let led_advancing = config.get("led_buffer_advancing", afc.led_buffer_advancing.as_str())?;
         let led_trailing = config.get("led_buffer_trailing", afc.led_buffer_trailing.as_str())?;
-        let _led_neutral = config.get("led_buffer_neutral", afc.led_buffer_neutral.as_str())?;
+        let led_neutral = config.get("led_buffer_neutral", afc.led_buffer_neutral.as_str())?;
         let led_buffer_disabled = config.get("led_buffer_disable", afc.led_buffer_disabled.as_str())?;
         let led = led_index.is_some();
         let _buffer_distance = config.getfloat_opt("distance", Lim::new())?;
@@ -105,13 +109,25 @@ impl AfcBuffer {
         } else {
             (None, None)
         };
+        // (AFCFPSBuffer's own settings come after the base buffer's)
+        let fps_cfg = if kind == "FPS_PSF" { Some(super::fps::FpsConfig::new(&printer, config, &name)?) } else { None };
+        let (multiplier_high, multiplier_low, last_multiplier) = match &fps_cfg {
+            Some(c) => {
+                let (h, l) = super::fps::Fps::multipliers(c);
+                (PyVal::Float(h), PyVal::Float(l), PyVal::Float(1.0))
+            }
+            None => (multiplier_high, multiplier_low, PyVal::Int(1)),
+        };
+        let reactor2 = reactor.clone();
         let buffer = Rc::new_cyclic(|me| AfcBuffer {
             me: me.clone(),
             printer: printer.clone(),
             afc: afc.clone(),
             reactor,
             name: name.clone(),
-            kind,
+            kind: kind.clone(),
+            debug,
+            fps: fps_cfg.map(|c| super::fps::Fps::new(c, &reactor2, me)),
             lanes: RefCell::new(IndexMap::default()),
             last_state: RefCell::new("Unknown".into()),
             enable: Cell::new(false),
@@ -129,11 +145,12 @@ impl AfcBuffer {
             led_index,
             led_advancing,
             led_trailing,
+            led_neutral,
             led_buffer_disabled,
             advance_pin: advance_pin.clone(),
             multiplier_high: RefCell::new(multiplier_high),
             multiplier_low: RefCell::new(multiplier_low),
-            last_multiplier: RefCell::new(PyVal::Int(1)),
+            last_multiplier: RefCell::new(last_multiplier),
         });
         let b = buffer.clone();
         kaliru::events::KlippyReady::on(&printer, move || b.handle_ready());
@@ -150,14 +167,15 @@ impl AfcBuffer {
         }
         // Register Macros
         let b = buffer.clone();
+        let is_fps = kind == "FPS_PSF";
         function.register_mux_command(
             afc.show_macros,
             "QUERY_BUFFER",
             "BUFFER",
             &name,
-            Rc::new(move |g| b.cmd_query_buffer(g)),
-            CMD_QUERY_BUFFER_HELP,
-            Some(&[("BUFFER", "string", "Turtle_1")]),
+            Rc::new(move |g| if b.fps.is_some() { super::fps::cmd_query_buffer(&b, g) } else { b.cmd_query_buffer(g) }),
+            if is_fps { super::fps::CMD_QUERY_BUFFER_HELP } else { CMD_QUERY_BUFFER_HELP },
+            Some(&[("BUFFER", "string", if is_fps { "" } else { "Turtle_1" })]),
         )?;
         type Cmd = fn(&AfcBuffer, &GCodeCommand) -> KResult<()>;
         let cmds: [(&str, Cmd, Option<&str>); 5] = [
@@ -172,6 +190,9 @@ impl AfcBuffer {
             afc.gcode.register_mux_command(cmd, "BUFFER", Some(&name), Rc::new(move |g| f(&b, g)), help)?;
         }
         afc.buffers.borrow_mut().insert(name, buffer.clone());
+        if buffer.fps.is_some() {
+            super::fps::finish_init(&buffer, &printer, super::fps::report_time(config)?, enable_sensors_in_gui)?;
+        }
         Ok(buffer)
     }
 
@@ -225,18 +246,18 @@ impl AfcBuffer {
         }
     }
 
-    fn stop_fault_timer(&self) {
+    pub fn stop_fault_timer(&self) {
         if let Some(t) = self.extruder_pos_timer.borrow().as_ref() {
             self.fault_timer.set(Some("Stopped"));
             self.reactor.update_timer(t, NEVER);
         }
     }
 
-    fn fault_detection_enabled(&self) -> bool {
+    pub fn fault_detection_enabled(&self) -> bool {
         num(&self.fault_sensitivity.borrow()) > 0.0
     }
 
-    fn start_fault_detection(&self, multiplier: PyVal) -> KResult<()> {
+    pub fn start_fault_detection(&self, multiplier: PyVal) -> KResult<()> {
         self.set_multiplier(multiplier)?;
         self.update_filament_error_pos()?;
         self.start_fault_timer();
@@ -257,6 +278,9 @@ impl AfcBuffer {
     }
 
     fn extruder_pos_update_event(&self, eventtime: f64) -> KResult<f64> {
+        if self.fps.is_some() {
+            return super::fps::extruder_pos_update_event(self, eventtime);
+        }
         let extruder_pos = self.get_extruder_pos()?;
         // Check for filament problems (a stepperless_drive unit, OpenAMS, is
         // not native)
@@ -291,7 +315,7 @@ impl AfcBuffer {
         Ok(())
     }
 
-    fn led(&self, color: &str) -> KResult<()> {
+    pub fn led(&self, color: &str) -> KResult<()> {
         if self.led {
             self.afc.function.afc_led(&PyVal::from(color), self.led_index.as_deref())?;
         }
@@ -299,6 +323,10 @@ impl AfcBuffer {
     }
 
     pub fn enable_buffer(&self, lane: &Rc<AfcLane>) -> KResult<()> {
+        if self.fps.is_some() {
+            let me = self.me.upgrade().ok_or_else(|| no_attr("AFCBuffer", "fps_value"))?;
+            return super::fps::enable_buffer(&me, lane);
+        }
         *self.current_lane.borrow_mut() = Some(lane.clone());
         self.led(&self.led_buffer_disabled)?;
         self.enable.set(true);
@@ -328,6 +356,9 @@ impl AfcBuffer {
     }
 
     pub fn disable_buffer(&self) -> KResult<()> {
+        if self.fps.is_some() {
+            return super::fps::disable_buffer(self);
+        }
         self.enable.set(false);
         let Some(lane) = self.current_lane.borrow().clone() else { return Ok(()) };
         self.afc.logger.debug(&AFC_BUFFER_AFCBUFFER_DISABLE_BUFFER, &format!("{} buffer disabled for {}", self.name, lane.name));
@@ -341,11 +372,18 @@ impl AfcBuffer {
     }
 
     /// the lane's stepper's rotation distance; None for a lane without one
-    fn rotation_distance(lane: &AfcLane) -> Option<f64> {
-        lane.stepper.borrow().as_ref().map(|s| s.extruder_stepper.stepper.get_rotation_distance().0)
+    pub fn rotation_distance(lane: &AfcLane) -> Option<f64> {
+        if let Some(s) = lane.stepper.borrow().as_ref() {
+            return Some(s.extruder_stepper.stepper.get_rotation_distance().0);
+        }
+        let drive = lane.drive_stepper.borrow().clone();
+        drive.and_then(|d| d.stepper.borrow().as_ref().map(|s| s.extruder_stepper.stepper.get_rotation_distance().0))
     }
 
     fn set_multiplier(&self, multiplier: PyVal) -> KResult<()> {
+        if self.fps.is_some() {
+            return super::fps::set_multiplier(self, num(&multiplier));
+        }
         if !self.enable.get() {
             return Ok(());
         }
@@ -371,6 +409,9 @@ impl AfcBuffer {
     }
 
     fn reset_multiplier(&self) -> KResult<()> {
+        if self.fps.is_some() {
+            return super::fps::reset_multiplier(self);
+        }
         self.afc.logger.debug(&AFC_BUFFER_AFCBUFFER_RESET_MULTIPLIER, "Buffer multiplier reset");
         let Some(lane) = self.current_lane.borrow().clone() else { return Ok(()) };
         if lane.stepper.borrow().is_none() {
@@ -426,6 +467,79 @@ impl AfcBuffer {
         }
         *self.last_state.borrow_mut() = ADVANCING_STATE_NAME.into();
         Ok(())
+    }
+
+    pub fn current_lane(&self) -> Option<Rc<AfcLane>> {
+        self.current_lane.borrow().clone()
+    }
+
+    pub fn set_current_lane(&self, lane: Option<Rc<AfcLane>>) {
+        *self.current_lane.borrow_mut() = lane;
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enable.get()
+    }
+
+    pub fn set_enabled(&self, v: bool) {
+        self.enable.set(v);
+    }
+
+    pub fn set_last_state(&self, s: &str) {
+        *self.last_state.borrow_mut() = s.to_string();
+    }
+
+    /// (multiplier_high, multiplier_low)
+    pub fn multiplier_values(&self) -> (f64, f64) {
+        (num(&self.multiplier_high.borrow()), num(&self.multiplier_low.borrow()))
+    }
+
+    pub fn last_multiplier_f64(&self) -> f64 {
+        num(&self.last_multiplier.borrow())
+    }
+
+    pub fn set_last_multiplier(&self, m: PyVal) {
+        *self.last_multiplier.borrow_mut() = m;
+    }
+
+    pub fn led_advancing(&self) -> String {
+        self.led_advancing.clone()
+    }
+
+    pub fn led_trailing(&self) -> String {
+        self.led_trailing.clone()
+    }
+
+    pub fn led_neutral(&self) -> String {
+        self.led_neutral.clone()
+    }
+
+    pub fn led_buffer_disabled(&self) -> String {
+        self.led_buffer_disabled.clone()
+    }
+
+    pub fn error_sensitivity_f64(&self) -> f64 {
+        num(&self.error_sensitivity.borrow())
+    }
+
+    pub fn error_sensitivity_str(&self) -> String {
+        self.error_sensitivity.borrow().str()
+    }
+
+    pub fn has_fault_timer(&self) -> bool {
+        self.extruder_pos_timer.borrow().is_some()
+    }
+
+    pub fn filament_error_pos(&self) -> Option<f64> {
+        self.filament_error_pos.get()
+    }
+
+    pub fn get_extruder_pos_pub(&self) -> KResult<f64> {
+        self.get_extruder_pos()
+    }
+
+    pub fn pause_on_error_pub(&self, msg: &str, pause: bool) -> KResult<()> {
+        self.pause_on_error(msg, pause)
     }
 
     pub fn buffer_status(&self) -> String {
@@ -583,6 +697,8 @@ impl AfcBuffer {
         r.insert("fault_detection_enabled".into(), PyVal::Bool(num(&sensitivity) > 0.0));
         r.insert("error_sensitivity".into(), sensitivity.clone());
         r.insert("fault_timer".into(), self.fault_timer.get().map_or(PyVal::None, PyVal::from));
+        let r = {
+            let mut r = r;
         match self.filament_error_pos.get().filter(|_| num(&sensitivity) > 0.0) {
             Some(error_pos) => {
                 let current_pos = self.get_extruder_pos()?;
@@ -594,6 +710,11 @@ impl AfcBuffer {
                 r.insert("distance_to_fault".into(), PyVal::None);
             }
         }
+            if let Some(f) = &self.fps {
+                super::fps::add_status(f, &mut r);
+            }
+            r
+        };
         Ok(PyVal::Dict(r))
     }
 }
@@ -619,7 +740,7 @@ pub fn load_config_prefix(config: &ConfigWrapper) -> KResult<PObj> {
         return Ok(AfcBuffer::new(config)?);
     }
     if buffer_type == "FPS_PSF" {
-        return Err(KError::config("AFC: FPS_PSF buffers are not native"));
+        return Ok(AfcBuffer::new(config)?);
     }
     Err(KError::config(format!("{} not valid, only switched(turtleneck style) or FPS_PSF are valid options", buffer_type)))
 }

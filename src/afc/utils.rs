@@ -370,7 +370,12 @@ impl kaliru::printer::PrinterObject for VirtualSensor {
 
 impl VirtualSensor {
     pub fn new(printer: &Rc<Printer>, name: &str, show_in_gui: bool, enable_cb: Rc<dyn Fn(bool) -> KResult<()>>) -> KResult<Rc<VirtualSensor>> {
-        let s = Rc::new(VirtualSensor { name: name.to_string(), sensor_enabled: Cell::new(false), filament_present: Cell::new(false), enable_cb: RefCell::new(Some(enable_cb)) });
+        Self::new_opt(printer, name, show_in_gui, Some(enable_cb))
+    }
+
+    /// a virtual sensor, with or without a callback for its gui switch
+    pub fn new_opt(printer: &Rc<Printer>, name: &str, show_in_gui: bool, enable_cb: Option<Rc<dyn Fn(bool) -> KResult<()>>>) -> KResult<Rc<VirtualSensor>> {
+        let s = Rc::new(VirtualSensor { name: name.to_string(), sensor_enabled: Cell::new(false), filament_present: Cell::new(false), enable_cb: RefCell::new(enable_cb) });
         let object_name = format!("{}filament_switch_sensor {}", if show_in_gui { "" } else { "_" }, name);
         if printer.add_object(&object_name, s.clone()).is_err() {
             // Fallback: direct dict registration

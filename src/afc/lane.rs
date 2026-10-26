@@ -876,6 +876,18 @@ impl AfcLane {
         if let Some(b) = self.load_debounce_button.borrow().as_ref() {
             b.debounce_delay.set(self.debounce_delay);
         }
+        // AFC_stepper: an FPS_PSF buffer's software endstops home the stepper
+        if self.stepper.borrow().is_some() {
+            if let Some(fps) = self.buffer_obj().filter(|b| b.kind == "FPS_PSF") {
+                if let Some(f) = fps.fps.as_ref() {
+                    if self.extruder_obj()?.tool_start.as_deref() == Some("buffer") {
+                        super::stepper::add_prebuilt_endstop(self, "tool_start", &format!("{}_tool_start", self.name), f.fps_endstop.clone())?;
+                    }
+                    super::stepper::add_prebuilt_endstop(self, "buffer_advance", &format!("{}_buffer_adv", self.name), f.fps_endstop.clone())?;
+                    super::stepper::add_prebuilt_endstop(self, "buffer_trailing", &format!("{}_buffer_trailing", self.name), f.fps_trailing_endstop.clone())?;
+                }
+            }
+        }
         Ok(())
     }
 

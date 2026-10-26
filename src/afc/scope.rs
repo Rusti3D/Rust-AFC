@@ -112,11 +112,6 @@ pub fn native_scope(config: &ConfigWrapper) -> KResult<Result<(), String>> {
                     }
                 }
             }
-            "AFC_buffer" => {
-                if opt(s, "type").is_some_and(|t| t != "switched") {
-                    return Ok(Err(format!("[{}] type", s)));
-                }
-            }
             "AFC_canvas" | "AFC_canvas_lane" => {
                 for o in ["buffer", "selector", "step_pin", "led_index", "led_logo_index"] {
                     if opt(s, o).is_some() {

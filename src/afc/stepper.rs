@@ -377,6 +377,20 @@ pub fn add_selector_endstop(selector: &AfcLane, lane: &AfcLane) -> KResult<()> {
     Ok(())
 }
 
+/// _add_endstop with a pre-built endstop (an FPS buffer's software one)
+pub fn add_prebuilt_endstop(lane: &AfcLane, key: &str, suffix: &str, endstop: EndstopRef) -> KResult<()> {
+    let st = stepper_of(lane)?;
+    let name = if ["hub", "tool_start", "tool_end", "buffer_advance", "buffer_trailing"].contains(&key) { suffix.to_string() } else { format!("{}_{}", lane.name, suffix) };
+    let qes = lane.printer.lookup::<QueryEndstops>("query_endstops")?;
+    qes.register_endstop(endstop.clone(), &name);
+    if endstop.add_stepper(st.stepper()).is_err() {
+        lane.afc.logger.info(&AFC_STEPPER_AFCEXTRUDERSTEPPER__ADD_ENDSTOP, &format!("Error when registering stepper {}", lane.name));
+    }
+    lane.afc.logger.debug(&AFC_STEPPER_AFCEXTRUDERSTEPPER__ADD_ENDSTOP, &format!("{} adding endstop {}:{}:None", lane.name, key, name));
+    st.endstops.borrow_mut().insert(key.to_string(), (endstop, name));
+    Ok(())
+}
+
 /// an endstop of the unit's (HTLF's home switch) on its selector stepper
 pub fn add_named_endstop(selector: &AfcLane, endstop: &EndstopRef, name: &str) -> KResult<()> {
     let st = stepper_of(selector)?;

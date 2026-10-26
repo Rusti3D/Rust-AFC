@@ -1,0 +1,27 @@
+# fake_moonraker
+# An FPS_PSF buffer (configs/boxturtle_fps.cfg): a load of lane1 enables it
+# (the proportional correction sets the lane's rotation distance from the
+# reading), QUERY_BUFFER, a new set point, fault sensitivity, the unload
+# disables it
+CONFIG ../configs/boxturtle_fps.cfg
+DICTIONARY atmega2560.dict Turtle_1=stm32h723.dict
+
+G4 P1000
+SET_KINEMATIC_POSITION X=100 Y=100 Z=10
+WAIT 6
+QUERY_BUFFER BUFFER=FPS1
+TEST_BUTTON PIN=^!Turtle_1:TRG1 STATE=1
+WAIT 6
+T0
+WAIT 2
+QUERY_BUFFER BUFFER=FPS1
+AFC_SET_FPS_SET_POINT BUFFER=FPS1 SET_POINT=0.4 DEADBAND=0.2
+AFC_SET_ERROR_SENSITIVITY BUFFER=FPS1 SENSITIVITY=5
+WAIT 1
+QUERY_BUFFER BUFFER=FPS1
+TEST_BUTTON PIN=^PK1 STATE=0
+WAIT 2
+TOOL_UNLOAD LANE=lane1
+WAIT 2
+QUERY_BUFFER BUFFER=FPS1
+AFC_SET_FPS_SET_POINT BUFFER=FPS1 SET_POINT=0.85
