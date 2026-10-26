@@ -1,0 +1,22 @@
+# fake_moonraker
+# The toolhead's LEDs (configs/boxturtle_tled.cfg): the status LED through
+# PREP, a load and an unload; AFC_SET_EXTRUDER_LED turning the nozzle LEDs on
+# and off
+CONFIG ../configs/boxturtle_tled.cfg
+DICTIONARY atmega2560.dict Turtle_1=stm32h723.dict
+
+G4 P1000
+SET_KINEMATIC_POSITION X=100 Y=100 Z=10
+WAIT 6
+AFC_SET_EXTRUDER_LED EXTRUDER=extruder TURN_ON=1
+WAIT 1
+AFC_SET_EXTRUDER_LED EXTRUDER=extruder TURN_ON=0
+TEST_BUTTON PIN=^!Turtle_1:TRG1 STATE=1
+WAIT 6
+T0
+WAIT 2
+TEST_BUTTON PIN=^PK1 STATE=0
+WAIT 2
+TOOL_UNLOAD LANE=lane1
+WAIT 3
+AFC_STATUS

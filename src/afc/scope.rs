@@ -5,7 +5,7 @@ use kaliru::configfile::ConfigWrapper;
 use kaliru::error::KResult;
 
 /// The AFC modules the native AFC replaces (klippy/extras names)
-pub const NATIVE_MODULES: [&str; 24] = [
+pub const NATIVE_MODULES: [&str; 25] = [
     "AFC",
     "AFC_functions",
     "AFC_spool",
@@ -25,6 +25,7 @@ pub const NATIVE_MODULES: [&str; 24] = [
     "AFC_vivid",
     "AFC_Claymore",
     "AFC_HTLF",
+    "AFC_Toolchanger",
     "AFC_led",
     "AFC_buffer",
     "AFC_button",
@@ -64,13 +65,14 @@ pub fn native_scope(config: &ConfigWrapper) -> KResult<Result<(), String>> {
         match module {
             "AFC" => afc = true,
             "AFC_extruder" => {
-                for o in ["toolchanger_unit", "tool", "u1_filament_sensor_name", "u1_park_detector_name", "led_name", "status_led_idx", "nozzle_led_idx", "buffer"] {
+                // (tool: a klipper-toolchanger tool object, U1: Snapmaker's sensors)
+                for o in ["tool", "u1_filament_sensor_name", "u1_park_detector_name", "buffer"] {
                     if opt(s, o).is_some() {
                         return Ok(Err(format!("[{}] {}", s, o)));
                     }
                 }
                 if let Some(p) = opt(s, "pin_tool_start") {
-                    if p == "buffer" || p.to_lowercase() == "virtual" {
+                    if p == "buffer" {
                         return Ok(Err(format!("[{}] pin_tool_start {}", s, p)));
                     }
                 } else if opt(s, "pin_tool_end").is_some() && sections.iter().any(|x| x.starts_with("AFC_buffer ")) {

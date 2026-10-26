@@ -29,6 +29,7 @@ pub mod spool;
 pub mod stepper;
 pub mod stats;
 pub mod toolchange;
+pub mod toolchanger;
 pub mod unit;
 pub mod utils;
 pub mod vivid;

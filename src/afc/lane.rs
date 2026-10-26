@@ -1964,9 +1964,32 @@ impl AfcLane {
         Ok(())
     }
 
-    /// (no toolchanger units in the native scope)
+    /// tool_swap: the toolchanger picks up this lane's tool
     pub fn tool_swap(&self) -> KResult<()> {
+        let unit = self.extruder_obj()?.tc_unit_obj.borrow().clone();
+        if let Some(u) = unit {
+            super::toolchanger::tool_swap(&u, &self.rc(), false)?;
+        }
         Ok(())
+    }
+
+    /// activate_toolhead_extruder: the lane's extruder as the toolhead's
+    pub fn activate_toolhead_extruder(&self) -> KResult<()> {
+        let toolhead = self.afc.toolhead()?;
+        let ext = self.extruder_obj()?.toolhead_extruder()?;
+        if Rc::ptr_eq(&toolhead.get_extruder(), &ext) {
+            return Ok(());
+        }
+        // Code below is pulled exactly from klippy/kinematics/extruder.py file without the prints
+        toolhead.flush_step_generation()?;
+        toolhead.set_extruder(ext, 0.0);
+        self.printer.send_event("extruder:activate_extruder", &[])
+    }
+
+    /// the lane's unit, set by the unit's connect (or, for a tool's own lane,
+    /// by its extruder)
+    pub fn set_unit_obj(&self, unit: &Rc<AfcUnit>) {
+        *self.unit_obj.borrow_mut() = Some(unit.clone());
     }
 
     fn mapped_keys(&self) -> Vec<String> {

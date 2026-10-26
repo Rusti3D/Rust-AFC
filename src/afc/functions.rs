@@ -1560,6 +1560,11 @@ fn now() -> f64 {
 }
 
 impl DeltaTime {
+    /// delta_time: the time the last logged step took
+    pub fn delta(&self) -> f64 {
+        self.delta_time.get()
+    }
+
     pub fn new(logger: Rc<AfcLogger>) -> DeltaTime {
         DeltaTime { logger, start_time: Cell::new(None), last_time: Cell::new(None), major_delta_time: Cell::new(None), delta_time: Cell::new(0.0) }
     }

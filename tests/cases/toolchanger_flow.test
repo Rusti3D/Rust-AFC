@@ -1,0 +1,30 @@
+# fake_moonraker
+# A two-tool toolchanger (configs/toolchanger_flow.cfg), each tool its own
+# lane: tool 0's sensor (TEST_BUTTON) starts its standalone load (heat
+# check, then the extruder's own move to the nozzle), tool 1's virtual sensor
+# switched on (SET_FILAMENT_SENSOR) does the same; tools selected and
+# unselected (klipper-toolchanger's commands as macros), a tool change by T
+# command, stats, tool 0's filament out; last the toolhead LED command without
+# LEDs (its error ends the run)
+CONFIG ../configs/toolchanger_flow.cfg
+DICTIONARY atmega2560.dict Turtle_1=stm32h723.dict
+
+G4 P1000
+SET_KINEMATIC_POSITION X=100 Y=100 Z=10
+WAIT 6
+AFC_STATUS
+TEST_BUTTON PIN=^PK1 STATE=1
+WAIT 6
+SET_FILAMENT_SENSOR SENSOR=extruder1_tool_start ENABLE=1
+WAIT 6
+QUERY_FILAMENT_SENSOR SENSOR=extruder1_tool_start
+AFC_SELECT_TOOL TOOL=extruder1
+AFC_UNSELECT_TOOL
+AFC_SELECT_TOOL TOOL=nothing
+T0
+WAIT 2
+AFC_STATS
+TEST_BUTTON PIN=^PK1 STATE=0
+WAIT 2
+AFC_STATUS
+AFC_SET_TOOLHEAD_LED MAP=T1 TURN_ON=1

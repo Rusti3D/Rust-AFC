@@ -30,14 +30,21 @@ Python AFC on kaliru's plugin layer stays the fallback until the port is complet
   COSMOS); their lanes are calibrated (a first ViViD load rewrites config files).
 
 ## Queue
+- [ ] Toolchanger batch (committed locally, NOT pushed): AFC_Toolchanger (src/afc/toolchanger.rs), standalone
+  tool lanes, virtual tool_start sensor, toolhead LEDs (led_name / status_led_idx / nozzle_led_idx),
+  python's int defaults for tool_stn & co (utils::PyNum); kaliru led::led_helper_of (uncommitted in kaliru).
+  Verified so far: toolchanger_flow and bt_toolhead_led identical (single runs; toolchanger natively, no
+  libpython). Still to run: kaliru rustify_gate, kaliru commit + push, bump kaliru rev, the full
+  afc_cmp gate (26 cases x3), then push. The gate run was stopped by Claude Code for low host memory
+  (2026-10-26); rerun when memory allows.
 - [ ] Rusticc: next image picks up Rust-AFC (user decides when).
-- [ ] M3 Toolchanger (AFC_Toolchanger + AFC_extruder's toolchanger / LED options, klipper-toolchanger).
-- [ ] M4 OpenAMS / OAMS; FPS_PSF buffer; Snapmaker U1 options.
+- [ ] M4 FPS_PSF buffer (AFC_buffer.py AFCFPSBuffer + FPSEndstopWrapper: ADC, software endstops; batch
+  mode gets no ADC reports), OpenAMS / OAMS (custom MCU commands: needs a dictionary with them),
+  Snapmaker U1 options; klipper-toolchanger `tool` objects (python objects natively unreachable).
 
 ## Next
-1. Toolchanger: AFC_extruder toolchanger_unit makes the extruder a standalone lane (tc_lane) with its own
-   kinematics/trapq; tool LEDs (led_name, status_led_idx, nozzle_led_idx); SELECT_TOOL / UNSELECT_TOOL
-   (klipper-toolchanger; in tests a gcode_macro); multi-extruder test printer.
+1. Finish the toolchanger batch: kaliru `tools/rustify_gate.sh` (must match), commit + push kaliru
+   (led_helper_of), bump Cargo.toml kaliru rev, full `afc_cmp.sh` three times, clippy, push Rust-AFC.
 
 ## Verify
 `bash tools/afc_cmp.sh` (WSL, ~10 min for 14 cases); cargo clippy --release with CARGO_TARGET_DIR=~/rk/target-rafc

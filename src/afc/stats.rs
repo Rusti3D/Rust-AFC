@@ -186,7 +186,7 @@ pub struct AfcStats {
     pub average_toolchange_time: StatVar,
     pub average_tool_unload_time: StatVar,
     pub average_tool_load_time: StatVar,
-    average_tool_swap_time: Option<StatVar>,
+    pub average_tool_swap_time: Option<StatVar>,
 }
 
 impl AfcStats {

@@ -174,6 +174,16 @@ impl AfcPrep {
                     *extruder_obj.lane_loaded.borrow_mut() = Some(ll.str());
                 }
             }
+            // Restore previous virtual tool_start sensor states (toolheads without a physical
+            // toolhead sensor), same vars-file pattern as the virtual bypass above
+            if extruder_obj.tool_start.as_deref() == Some("virtual") {
+                let virt_state = extruders_saved
+                    .as_ref()
+                    .and_then(|e| key(e, &extruder_obj.name))
+                    .and_then(|s| key(&s, "virtual_tool_start"))
+                    .is_some_and(|v| v.truthy());
+                extruder_obj.restore_virtual_tool_start(virt_state)?;
+            }
         }
         afc.print_version(true);
 

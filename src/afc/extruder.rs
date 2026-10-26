@@ -8,11 +8,20 @@
 use super::codes::*;
 use super::lane::AfcLane;
 use super::stats::StatVar;
-use super::utils::{add_filament_switch, SwitchOptions};
+use super::lane::LaneState;
+use super::utils::{add_filament_switch, PyNum, SwitchOptions, VirtualSensor};
 use super::{no_attr, Afc, State};
 use kaliru::configfile::{ConfigWrapper, Lim};
 use kaliru::error::{KError, KResult};
+use kaliru::chelper::itersolve::SkRef;
+use kaliru::chelper::kin_cartesian::cartesian_stepper_alloc;
+use kaliru::chelper::trapq::TrapQRef;
 use kaliru::extras::buttons::PrinterButtons;
+use kaliru::extras::force_move::calc_move_time;
+use kaliru::extras::motion_queuing::PrinterMotionQueuing;
+use kaliru::kinematics::extruder::PrinterExtruder;
+use kaliru::reactor::{Timer, NEVER};
+use kaliru::extras::led::LEDHelper;
 use kaliru::extras::filament_switch_sensor::SwitchSensor;
 use kaliru::gcode::GCodeCommand;
 use kaliru::printer::{PObj, Printer, PrinterObject};
@@ -25,6 +34,7 @@ use std::rc::{Rc, Weak};
 
 pub const CMD_UPDATE_TOOLHEAD_SENSORS_HELP: &str = "Gives ability to update tool_stn, tool_stn_unload, tool_sensor_after_extruder values without restarting klipper";
 pub const CMD_SAVE_EXTRUDER_VALUES_HELP: &str = "Saves tool_stn, tool_stn_unload and tool_sensor_after_extruder values to config file.";
+pub const CMD_AFC_SET_EXTRUDER_LED_HELP: &str = "Turns on toolhead leds for specified extruder name, does not affect status led if status_led_idx variable is provided";
 
 /// AFCExtruderStats: cut and toolchange counts (local until moonraker connects)
 pub struct ExtruderStats {
@@ -178,18 +188,18 @@ pub struct AfcExtruder {
     pub th_extruder_name: String,
     pub tool_start: Option<String>,
     pub tool_end: Option<String>,
-    pub tool_stn: Cell<f64>,
-    pub tool_stn_unload: Cell<f64>,
-    pub tool_sensor_after_extruder: Cell<f64>,
-    pub tool_unload_speed: Cell<f64>,
-    pub tool_load_speed: Cell<f64>,
+    pub tool_stn: PyNum,
+    pub tool_stn_unload: PyNum,
+    pub tool_sensor_after_extruder: PyNum,
+    pub tool_unload_speed: PyNum,
+    pub tool_load_speed: PyNum,
     pub buffer_name: Option<String>,
     pub enable_runout: Cell<bool>,
     pub enable_runout_in_bypass: Cell<bool>,
     pub deadband: f64,
     pub toolchange_temp_drop: f64,
-    next_pickup: Cell<bool>,
-    status: Cell<State>,
+    pub next_pickup: Cell<bool>,
+    pub status: Cell<State>,
     pub lane_loaded: RefCell<Option<String>>,
     pub lanes: RefCell<IndexMap<String, Rc<AfcLane>>>,
     no_lanes: Cell<bool>,
@@ -202,6 +212,41 @@ pub struct AfcExtruder {
     fila_tool_end: RefCell<Option<Rc<SwitchSensor>>>,
     common_save_msg: String,
     toolhead_extruder: RefCell<Option<ExtraAxisRef>>,
+    toolhead_leds: Option<String>,
+    toolhead_status_index: Option<Vec<i64>>,
+    toolhead_nozzle_index: Option<Vec<i64>>,
+    /// the led_name object's LEDHelper (its _set_color / _check_transmit)
+    toolhead_led: RefCell<Option<Rc<LEDHelper>>>,
+    toolhead_led_found: Cell<bool>,
+    status_led_count: Cell<i64>,
+    /// toolchanger_unit: this toolhead is a tool of an AFC_Toolchanger, its
+    /// own lane (tc_lane) when no unit feeds it
+    pub tc_unit_name: Option<String>,
+    pub tc_unit_obj: RefCell<Option<Rc<super::unit::AfcUnit>>>,
+    pub tc_lane: RefCell<Option<Rc<AfcLane>>>,
+    pub custom_tool_swap: Option<String>,
+    pub custom_unselect: Option<String>,
+    enable_standalone_purge: bool,
+    standalone_auto_load_unload: bool,
+    pub load_active: Cell<bool>,
+    current_move_distance: Cell<f64>,
+    captured_toolhead_temp: RefCell<Option<super::TempState>>,
+    /// pin_tool_start virtual: the sensor its gui switch stands in for
+    pub virtual_tool_start: RefCell<Option<Rc<VirtualSensor>>>,
+    tc_motion: RefCell<Option<TcMotion>>,
+    printer_extruder: RefCell<Option<Rc<PrinterExtruder>>>,
+    extruder_move_timer: Timer,
+    temp_check_timer: Timer,
+}
+
+/// A standalone tool's own move of its toolhead extruder (load / unload to
+/// the nozzle): the stepper's kinematics and trapq while it moves
+struct TcMotion {
+    motion_queuing: Rc<PrinterMotionQueuing>,
+    stepper_kinematics: SkRef,
+    trapq: TrapQRef,
+    prev_sk: RefCell<Option<SkRef>>,
+    prev_trapq: RefCell<Option<TrapQRef>>,
 }
 
 impl AfcExtruder {
@@ -220,11 +265,11 @@ impl AfcExtruder {
         }
         let tool_start = config.get_opt("pin_tool_start")?;
         let tool_end = config.get_opt("pin_tool_end")?;
-        let tool_stn = config.getfloat("tool_stn", 72.0, Lim::new())?;
-        let tool_stn_unload = config.getfloat("tool_stn_unload", 100.0, Lim::new())?;
-        let tool_sensor_after_extruder = config.getfloat("tool_sensor_after_extruder", 0.0, Lim::new())?;
-        let tool_unload_speed = config.getfloat("tool_unload_speed", 25.0, Lim::new())?;
-        let tool_load_speed = config.getfloat("tool_load_speed", 25.0, Lim::new())?;
+        let tool_stn = super::getfloat_pv(config, "tool_stn", PyVal::Int(72))?;
+        let tool_stn_unload = super::getfloat_pv(config, "tool_stn_unload", PyVal::Int(100))?;
+        let tool_sensor_after_extruder = super::getfloat_pv(config, "tool_sensor_after_extruder", PyVal::Int(0))?;
+        let tool_unload_speed = super::getfloat_pv(config, "tool_unload_speed", PyVal::Int(25))?;
+        let tool_load_speed = super::getfloat_pv(config, "tool_load_speed", PyVal::Int(25))?;
         let buffer_name = config.get_opt("buffer")?;
         let enable_sensors_in_gui = config.getboolean("enable_sensors_in_gui", afc.enable_sensors_in_gui)?;
         let enable_runout = config.getboolean("enable_tool_runout", afc.enable_tool_runout)?;
@@ -232,19 +277,65 @@ impl AfcExtruder {
         let debounce_delay = config.getfloat("debounce_delay", afc.debounce_delay, Lim::new())?;
         let deadband = config.getfloat("deadband", 2.0, Lim::new())?;
         let toolchange_temp_drop = config.getfloat("toolchange_temp_drop", afc.toolchange_temp_drop, Lim::new())?;
-        for opt in ["led_name", "status_led_idx", "nozzle_led_idx", "u1_filament_sensor_name", "u1_park_detector_name", "toolchanger_unit", "tool"] {
+        let toolhead_leds = config.get_opt("led_name")?;
+        let toolhead_status_index = config.get_opt("status_led_idx")?;
+        let toolhead_nozzle_index = config.get_opt("nozzle_led_idx")?;
+        for opt in ["u1_filament_sensor_name", "u1_park_detector_name"] {
             if config.get_opt(opt)?.is_some() {
                 return Err(KError::config(format!("AFC_extruder {} is not native", opt)));
             }
         }
+        let toolhead_status_index = toolhead_status_index.filter(|s| !s.is_empty()).map(|s| afc.function.get_led_indexes(&s)).transpose()?;
+        let toolhead_nozzle_index = toolhead_nozzle_index.filter(|s| !s.is_empty()).map(|s| afc.function.get_led_indexes(&s)).transpose()?;
+        // If both status and nozzle indexes are provided, verify that they do not overlap
+        if let (Some(n), Some(st)) = (&toolhead_nozzle_index, &toolhead_status_index) {
+            if !n.is_empty() && !st.is_empty() {
+                let mut both: Vec<i64> = st.iter().filter(|i| n.contains(i)).copied().collect();
+                both.sort();
+                both.dedup();
+                if !both.is_empty() {
+                    let list = both.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+                    return Err(KError::config(format!("{} have overlapping led index(s) [{}]. Please fix and restart.", fullname, list)));
+                }
+            }
+        }
+        let tc_unit_name = config.get_opt("toolchanger_unit")?;
+        // (a klipper-toolchanger tool object: native_scope leaves it to the python AFC)
+        if config.get_opt("tool")?.is_some() {
+            return Err(KError::config("AFC_extruder tool is not native"));
+        }
         let _map = config.getlist("map", PyVal::List(vec![]), ",", None)?;
-        let _custom_tool_swap = config.get_opt("custom_tool_swap")?;
-        let _custom_unselect = config.get_opt("custom_unselect")?;
-        let _enable_standalone_purge = config.getboolean("enable_standalone_purge", afc.enable_standalone_purge)?;
-        let _standalone_auto_load_unload = config.getboolean("standalone_auto_load_unload", afc.standalone_auto_load_unload)?;
+        let custom_tool_swap = config.get_opt("custom_tool_swap")?;
+        let custom_unselect = config.get_opt("custom_unselect")?;
+        let enable_standalone_purge = config.getboolean("enable_standalone_purge", afc.enable_standalone_purge)?;
+        let standalone_auto_load_unload = config.getboolean("standalone_auto_load_unload", afc.standalone_auto_load_unload)?;
         let estats = ExtruderStats::new(&th_extruder_name, afc.logger.clone(), afc.tool_cut_threshold);
 
-        let ext = Rc::new_cyclic(|me| AfcExtruder {
+        let reactor = printer.get_reactor();
+        let ext = Rc::new_cyclic(|me: &Weak<AfcExtruder>| {
+            let w = me.clone();
+            let extruder_move_timer = reactor.register_timer(
+                Box::new(move |et| match w.upgrade() {
+                    Some(e) => e.extruder_move_cb(et).unwrap_or_else(|err| {
+                        kaliru::logging::exception_err("AFC extruder move", &err);
+                        NEVER
+                    }),
+                    None => NEVER,
+                }),
+                NEVER,
+            );
+            let w = me.clone();
+            let temp_check_timer = reactor.register_timer(
+                Box::new(move |et| match w.upgrade() {
+                    Some(e) => e.temp_check_cb(et).unwrap_or_else(|err| {
+                        kaliru::logging::exception_err("AFC extruder temp check", &err);
+                        NEVER
+                    }),
+                    None => NEVER,
+                }),
+                NEVER,
+            );
+            AfcExtruder {
             me: me.clone(),
             printer: printer.clone(),
             afc: afc.clone(),
@@ -253,11 +344,11 @@ impl AfcExtruder {
             th_extruder_name,
             tool_start: tool_start.clone(),
             tool_end: tool_end.clone(),
-            tool_stn: Cell::new(tool_stn),
-            tool_stn_unload: Cell::new(tool_stn_unload),
-            tool_sensor_after_extruder: Cell::new(tool_sensor_after_extruder),
-            tool_unload_speed: Cell::new(tool_unload_speed),
-            tool_load_speed: Cell::new(tool_load_speed),
+            tool_stn: PyNum::new(&tool_stn),
+            tool_stn_unload: PyNum::new(&tool_stn_unload),
+            tool_sensor_after_extruder: PyNum::new(&tool_sensor_after_extruder),
+            tool_unload_speed: PyNum::new(&tool_unload_speed),
+            tool_load_speed: PyNum::new(&tool_load_speed),
             buffer_name,
             enable_runout: Cell::new(enable_runout),
             enable_runout_in_bypass: Cell::new(enable_runout_in_bypass),
@@ -276,6 +367,28 @@ impl AfcExtruder {
             fila_tool_end: RefCell::new(None),
             common_save_msg: format!("\nRun SAVE_EXTRUDER_VALUES EXTRUDER={} once done to update values in config", name),
             toolhead_extruder: RefCell::new(None),
+            toolhead_leds: toolhead_leds.clone(),
+            toolhead_status_index,
+            toolhead_nozzle_index,
+            toolhead_led: RefCell::new(None),
+            toolhead_led_found: Cell::new(false),
+            status_led_count: Cell::new(0),
+            tc_unit_name: tc_unit_name.clone(),
+            tc_unit_obj: RefCell::new(None),
+            tc_lane: RefCell::new(None),
+            custom_tool_swap,
+            custom_unselect,
+            enable_standalone_purge,
+            standalone_auto_load_unload,
+            load_active: Cell::new(false),
+            current_move_distance: Cell::new(0.0),
+            captured_toolhead_temp: RefCell::new(None),
+            virtual_tool_start: RefCell::new(None),
+            tc_motion: RefCell::new(None),
+            printer_extruder: RefCell::new(None),
+            extruder_move_timer,
+            temp_check_timer,
+        }
         });
         let e = ext.clone();
         kaliru::events::KlippyConnect::on(&printer, move || e.handle_connect());
@@ -288,9 +401,22 @@ impl AfcExtruder {
             if pin.to_lowercase() == "unknown" {
                 return Err(KError::config(format!("Unknown is not valid for pin_tool_start in [{}] config.", fullname)));
             }
-            if pin == "buffer" || pin == "virtual" {
+            if pin == "buffer" {
                 return Err(KError::config(format!("AFC_extruder pin_tool_start {} is not native", pin)));
             }
+        }
+        if tool_start.as_deref() == Some("virtual") {
+            // Virtual toolhead sensor for toolheads without a physical sensor (standalone
+            // toolchanger lanes only)
+            let w = Rc::downgrade(&ext);
+            let vs = VirtualSensor::new(
+                &printer,
+                &format!("{}_tool_start", name),
+                enable_sensors_in_gui,
+                Rc::new(move |enabled| w.upgrade().map_or(Ok(()), |e| e.virtual_tool_start_toggle(enabled))),
+            )?;
+            *ext.virtual_tool_start.borrow_mut() = Some(vs);
+        } else if let Some(pin) = &tool_start {
             let w = Rc::downgrade(&ext);
             let (fila, _b) = add_filament_switch(
                 &format!("{}_tool_start", name),
@@ -307,12 +433,7 @@ impl AfcExtruder {
             let w = Rc::downgrade(&ext);
             buttons.register_buttons(
                 &[pin.as_str()],
-                Rc::new(move |_et, state| {
-                    if let Some(e) = w.upgrade() {
-                        e.tool_start_state.set(state != 0);
-                    }
-                    Ok(())
-                }),
+                Rc::new(move |_et, state| w.upgrade().map_or(Ok(()), |e| e.tool_start_callback(state != 0))),
             )?;
         }
         if let Some(pin) = &tool_end {
@@ -343,6 +464,22 @@ impl AfcExtruder {
             )?;
             *ext.fila_tool_end.borrow_mut() = Some(fila);
         }
+        if let Some(tc) = &tc_unit_name {
+            {
+                let mut fc = config.fileconfig.borrow_mut();
+                fc.set(&fullname, "unit", tc.split_whitespace().last().unwrap_or(""))?;
+                fc.set(&fullname, "extruder", &name)?;
+                fc.set(&fullname, "hub", "direct")?;
+                fc.set(&fullname, "standalone", "True")?;
+            }
+            let lane = AfcLane::new(config, false)?;
+            printer.objects_set(&format!("AFC_lane {}", name), lane.clone());
+            *ext.tc_lane.borrow_mut() = Some(lane);
+            let motion_queuing = printer.load_as::<PrinterMotionQueuing>(config, "motion_queuing")?;
+            let stepper_kinematics = cartesian_stepper_alloc('x').expect("axis");
+            let trapq = motion_queuing.allocate_trapq();
+            *ext.tc_motion.borrow_mut() = Some(TcMotion { motion_queuing, stepper_kinematics, trapq, prev_sk: RefCell::new(None), prev_trapq: RefCell::new(None) });
+        }
         let show_macros = afc.show_macros;
         let e = ext.clone();
         afc.function.register_mux_command(
@@ -364,6 +501,18 @@ impl AfcExtruder {
             CMD_SAVE_EXTRUDER_VALUES_HELP,
             Some(&[("EXTRUDER", "string", "extruder")]),
         )?;
+        if toolhead_leds.is_some() {
+            let e = ext.clone();
+            afc.function.register_mux_command(
+                show_macros,
+                "AFC_SET_EXTRUDER_LED",
+                "EXTRUDER",
+                &name,
+                Rc::new(move |g| e.cmd_afc_set_extruder_led(g)),
+                CMD_AFC_SET_EXTRUDER_LED_HELP,
+                Some(&[("EXTRUDER", "string", "extruder"), ("TURN_ON", "int", "1")]),
+            )?;
+        }
         Ok(ext)
     }
 
@@ -375,14 +524,152 @@ impl AfcExtruder {
         self.toolhead_extruder()?.get_heater()
     }
 
-    /// (no toolchanger lane to drop)
-    pub fn check_lanes(&self) {}
+    /// check_lanes: a toolhead other lanes feed drops its own (tc) lane
+    pub fn check_lanes(&self) {
+        let Some(tc_lane) = self.tc_lane.borrow().clone() else { return };
+        if self.lanes.borrow().len() > 1 && self.lanes.borrow().contains_key(&tc_lane.name) {
+            if let Some(u) = tc_lane.unit_obj_opt() {
+                u.lanes.borrow_mut().shift_remove(&tc_lane.name);
+            }
+            self.lanes.borrow_mut().shift_remove(&tc_lane.name);
+            self.afc.lanes.borrow_mut().shift_remove(&tc_lane.name);
+            self.printer.objects_remove(&format!("AFC_lane {}", self.name));
+        }
+    }
 
     fn handle_ready(&self) -> KResult<()> {
+        // a toolhead that is its own only lane is "standalone"
         if self.lanes.borrow().contains_key(&self.name) {
             self.no_lanes.set(true);
             self.afc.logger.info(&AFC_EXTRUDER_AFCEXTRUDER_HANDLE_READY, &format!("{} no lanes", self.name));
+            // Due to race conditions at startup, these variables might not be set correctly,
+            //  set to current tool start state
+            if let Some(tc) = self.tc_lane.borrow().clone() {
+                tc.load_state_raw.set(self.tool_start_state.get());
+                tc.prep_state.set(self.tool_start_state.get());
+                if self.tool_start_state.get() {
+                    tc.set_loaded()?;
+                    tc.set_tool_loaded(false)?;
+                }
+            }
+            if self.tool_start.as_deref() == Some("buffer") {
+                return Err(KError::config(format!("buffer is not valid config for pin_tool_start when using {} as a standalone extruder", self.name)));
+            }
+        } else if self.tool_start.as_deref() == Some("virtual") {
+            return Err(KError::config(format!(
+                "{} config section cannot have a virtual toolhead sensor when lanes are configured for this toolhead.",
+                self.fullname
+            )));
         }
+        Ok(())
+    }
+
+    /// tool_start_callback: the toolhead sensor; a standalone tool loads
+    /// (or unloads) its nozzle by itself
+    pub fn tool_start_callback(&self, state: bool) -> KResult<()> {
+        let c = &AFC_EXTRUDER_AFCEXTRUDER_TOOL_START_CALLBACK;
+        let tc_lane = self.tc_lane.borrow().clone();
+        if let (Some(_), Some(tc_lane), true) = (&self.tc_unit_name, &tc_lane, self.is_standalone()) {
+            if state != self.tool_start_state.get() {
+                tc_lane.load_state_raw.set(state);
+                tc_lane.prep_state.set(state);
+                // Check to verify that toolhead is not actively printing to trigger the auto
+                // load/unload logic.
+                let actively_printing = self.afc.function.is_printing(false)? && self.on_shuttle();
+                if self.printer.state_message() == "Printer is ready" {
+                    if tc_lane.afc_prep_done.get() && !actively_printing {
+                        if state {
+                            if !self.load_active.get() {
+                                self.load_unload_sequence(self.tool_stn.get())?;
+                            }
+                        } else {
+                            tc_lane.set_tool_unloaded(false)?;
+                            tc_lane.set_unloaded()?;
+                        }
+                    } else if tc_lane.afc_prep_done.get() && actively_printing {
+                        self.afc.logger.info(c, "Cannot trigger auto load/unload when toolhead is actively printing");
+                    }
+                    if tc_lane.afc_prep_done.get() {
+                        self.afc.save_vars()?;
+                    }
+                }
+            } else {
+                self.afc.logger.info(c, "Not loading State matches tool_start_state");
+            }
+        }
+        self.tool_start_state.set(state);
+        Ok(())
+    }
+
+    /// note_tool_start_callback: the virtual sensor's state, then the callback
+    fn note_tool_start_callback(&self, state: bool) -> KResult<()> {
+        // (python passes (state, force) as (eventtime, is_filament_present):
+        // the helper only ever sees "no filament")
+        if let Some(vs) = self.virtual_tool_start.borrow().clone() {
+            vs.note_filament_present(false);
+        }
+        self.tool_start_callback(state)
+    }
+
+    /// _set_standalone_lane_states: the tool's lane loaded or not with it
+    fn set_standalone_lane_states(&self, enabled: bool) -> KResult<()> {
+        let Some(lane) = self.tc_lane.borrow().clone() else { return Ok(()) };
+        if enabled {
+            lane.set_loaded()?;
+            lane.set_tool_loaded(false)?;
+            if !self.on_shuttle() {
+                lane.unit_obj()?.lane_tool_loaded_idle(&lane)?;
+            }
+        } else {
+            lane.set_tool_unloaded(false)?;
+            if self.tool_start.as_deref() == Some("virtual") {
+                lane.set_unloaded()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// _apply_virtual_tool_start_state: the virtual sensor's switch, state
+    /// and tool_start_state as one
+    fn apply_virtual_tool_start_state(&self, enabled: bool) {
+        if self.tool_start.as_deref() != Some("virtual") {
+            return;
+        }
+        if let Some(vs) = self.virtual_tool_start.borrow().as_ref() {
+            vs.sensor_enabled.set(enabled);
+            vs.filament_present.set(enabled);
+        }
+        self.tool_start_state.set(enabled);
+    }
+
+    /// the virtual sensor's gui switch (SET_FILAMENT_SENSOR ENABLE=)
+    fn virtual_tool_start_toggle(&self, enabled: bool) -> KResult<()> {
+        self.note_tool_start_callback(enabled)?;
+        self.apply_virtual_tool_start_state(enabled);
+        self.afc.logger.info(
+            &AFC_EXTRUDER_AFCEXTRUDER__VIRTUAL_TOOL_START_TOGGLE,
+            &format!("Virtual toolhead sensor for {} {}", self.name, if enabled { "enabled." } else { "disabled" }),
+        );
+        if self.afc.prep_done.get() {
+            self.afc.save_vars()?;
+        }
+        Ok(())
+    }
+
+    /// restore_virtual_tool_start: the saved virtual sensor state (PREP)
+    pub fn restore_virtual_tool_start(&self, enabled: bool) -> KResult<()> {
+        if enabled == self.tool_start_state.get() {
+            return Ok(());
+        }
+        let Some(tc) = self.tc_lane.borrow().clone() else { return Ok(()) };
+        self.apply_virtual_tool_start_state(enabled);
+        self.set_standalone_lane_states(enabled)?;
+        tc.load_state_raw.set(enabled);
+        tc.prep_state.set(enabled);
+        self.afc.logger.info(
+            &AFC_EXTRUDER_AFCEXTRUDER_RESTORE_VIRTUAL_TOOL_START,
+            &format!("Virtual toolhead sensor for {} restored as {}", self.name, if enabled { "enabled, filament loaded" } else { "disabled" }),
+        );
         Ok(())
     }
 
@@ -402,8 +689,37 @@ impl AfcExtruder {
             .lookup_object_opt(&self.th_extruder_name)
             .and_then(kaliru::printer::downcast_rc::<kaliru::kinematics::extruder::PrinterExtruder>);
         match found {
-            Some(e) => *self.toolhead_extruder.borrow_mut() = Some(e),
+            Some(e) => {
+                *self.printer_extruder.borrow_mut() = Some(e.clone());
+                *self.toolhead_extruder.borrow_mut() = Some(e);
+            }
             None => return Err(KError::config(format!("[{}] not found in config file for {}", self.th_extruder_name, self.fullname))),
+        }
+        if let Some(tc) = &self.tc_unit_name {
+            let tc_str = format!("AFC_Toolchanger {}", tc);
+            let unit = self.printer.lookup_object_opt(&tc_str).and_then(kaliru::printer::downcast_rc::<super::unit::AfcUnit>);
+            let Some(unit) = unit else {
+                return Err(KError::config(format!("[{}] not found in config file for {}", tc_str, self.fullname)));
+            };
+            if let Some(lane) = self.tc_lane.borrow().as_ref() {
+                lane.set_unit_obj(&unit);
+            }
+            *self.tc_unit_obj.borrow_mut() = Some(unit);
+        }
+        // Looking up led object if user supplied variable
+        if let Some(leds) = &self.toolhead_leds {
+            let Some(obj) = self.printer.lookup_object_opt(leds) else {
+                return Err(KError::config(format!("{} not found in config file for led_name variable in {} config section", leds, self.fullname)));
+            };
+            self.toolhead_led_found.set(true);
+            let helper = match kaliru::printer::downcast_rc::<super::led::AfcLed>(obj.clone()) {
+                Some(l) => l.led_helper(),
+                None => kaliru::extras::led::led_helper_of(&obj),
+            };
+            if let Some(h) = helper {
+                self.status_led_count.set(h.led_count());
+                *self.toolhead_led.borrow_mut() = Some(h);
+            }
         }
         Ok(())
     }
@@ -447,19 +763,145 @@ impl AfcExtruder {
 
     /// The sensor's runout switch (the gui's SET_FILAMENT_SENSOR ENABLE)
     pub fn tool_sensor_enabled(&self, sensor: &str) -> KResult<bool> {
+        if sensor == "tool_start" {
+            if let Some(vs) = self.virtual_tool_start.borrow().as_ref() {
+                return Ok(vs.sensor_enabled.get());
+            }
+        }
         let fila = if sensor == "tool_start" { self.fila_tool_start.borrow().clone() } else { self.fila_tool_end.borrow().clone() };
         fila.map(|f| f.runout_helper.sensor_enabled.get()).ok_or_else(|| no_attr("NoneType", "runout_helper"))
     }
 
-    /// (standalone extruders need a toolchanger lane: outside the native scope)
-    pub fn load_unload_sequence(&self, _distance: f64) -> KResult<()> {
-        Err(no_attr("NoneType", "unit_obj"))
+    fn tc_lane(&self) -> KResult<Rc<AfcLane>> {
+        self.tc_lane.borrow().clone().ok_or_else(|| no_attr("NoneType", "status"))
+    }
+
+    /// load_unload_sequence: a standalone tool's load to (or unload from)
+    /// the nozzle: heat, then move the extruder, without blocking
+    pub fn load_unload_sequence(&self, distance: f64) -> KResult<()> {
+        let c = &AFC_EXTRUDER_AFCEXTRUDER_LOAD_UNLOAD_SEQUENCE;
+        let info_str = if distance > 0.0 { "Loading" } else { "Unloading" };
+        let loaded = distance > 0.0;
+        let tc_lane = self.tc_lane()?;
+        if !self.standalone_auto_load_unload {
+            tc_lane.set_status(if loaded { LaneState::Tooled } else { LaneState::None });
+            tc_lane.need_purge.set(false);
+            self.set_standalone_lane_states(loaded)?;
+            self.apply_virtual_tool_start_state(loaded);
+            self.afc.logger.info(c, &format!("{} {} skipped: standalone_auto_load_unload is disabled, hotend heating and filament move were not performed", info_str, self.name));
+            return Ok(());
+        }
+        self.afc.logger.info(c, &format!("{} {}", info_str, self.name));
+        self.load_active.set(true);
+        self.current_move_distance.set(distance);
+        if distance > 0.0 {
+            tc_lane.unit_obj()?.lane_loading(&tc_lane)?;
+            tc_lane.set_status(LaneState::ToolLoading);
+        } else {
+            tc_lane.set_status(LaneState::ToolUnloading);
+        }
+        *self.captured_toolhead_temp.borrow_mut() = self.afc.capture_toolhead_temp(Some(self), true)?;
+        self.afc.check_extruder_temp(&tc_lane, true)?;
+        self.afc.reactor.update_timer(&self.temp_check_timer, self.afc.reactor.monotonic() + 1.0);
+        Ok(())
+    }
+
+    /// move_extruder: the toolhead extruder by distance on its own trapq;
+    /// extruder_move_cb puts it back once the move is done
+    fn move_extruder(&self, distance: f64) -> KResult<()> {
+        if distance == 0.0 {
+            return Ok(());
+        }
+        self.load_active.set(true);
+        let toolhead = self.afc.toolhead()?;
+        let pe = self.printer_extruder.borrow().clone().ok_or_else(|| no_attr("NoneType", "extruder_stepper"))?;
+        let es = pe.extruder_stepper.clone().ok_or_else(|| no_attr("NoneType", "stepper"))?;
+        let stepper = &es.stepper;
+        let motion = self.tc_motion.borrow();
+        let m = motion.as_ref().ok_or_else(|| no_attr("AFCExtruder", "stepper_kinematics"))?;
+        *m.prev_sk.borrow_mut() = stepper.set_stepper_kinematics(Some(m.stepper_kinematics.clone()));
+        *m.prev_trapq.borrow_mut() = stepper.set_trapq(Some(m.trapq.clone()));
+        stepper.set_position(&[0.0, 0.0, 0.0]);
+        let (axis_r, accel_t, cruise_t, cruise_v) = calc_move_time(distance, self.tool_load_speed.get(), 5.0);
+        let mut print_time = toolhead.get_last_move_time()?;
+        m.trapq.borrow_mut().append(print_time, accel_t, cruise_t, accel_t, 0.0, 0.0, 0.0, axis_r, 0.0, 0.0, 0.0, cruise_v, 5.0);
+        print_time += accel_t + cruise_t + accel_t;
+        m.motion_queuing.note_mcu_movequeue_activity(print_time, true);
+        let dwell_time = accel_t + cruise_t + accel_t;
+        self.afc.reactor.update_timer(&self.extruder_move_timer, self.afc.reactor.monotonic() + dwell_time.ceil());
+        Ok(())
+    }
+
+    /// extruder_move_cb: the extruder's own kinematics back, the motor off,
+    /// the temperature restored, the lane's new state
+    fn extruder_move_cb(&self, _eventtime: f64) -> KResult<f64> {
+        let c = &AFC_EXTRUDER_AFCEXTRUDER_EXTRUDER_MOVE_CB;
+        let toolhead = self.afc.toolhead()?;
+        let pe = self.printer_extruder.borrow().clone().ok_or_else(|| no_attr("NoneType", "extruder_stepper"))?;
+        let es = pe.extruder_stepper.clone().ok_or_else(|| no_attr("NoneType", "stepper"))?;
+        toolhead.flush_step_generation()?;
+        {
+            let motion = self.tc_motion.borrow();
+            let m = motion.as_ref().ok_or_else(|| no_attr("AFCExtruder", "trapq"))?;
+            es.stepper.set_trapq(m.prev_trapq.borrow_mut().take());
+            es.stepper.set_stepper_kinematics(m.prev_sk.borrow_mut().take());
+            m.motion_queuing.wipe_trapq(&m.trapq);
+        }
+        self.afc.function.do_enable(false, &self.th_extruder_name)?;
+        self.load_active.set(false);
+        let captured = self.captured_toolhead_temp.borrow_mut().take();
+        self.afc.restore_toolhead_temp(captured.as_ref(), true)?;
+        let tc_lane = self.tc_lane()?;
+        let info_str = if self.current_move_distance.get() > 0.0 {
+            tc_lane.set_status(LaneState::Tooled);
+            tc_lane.need_purge.set(self.enable_standalone_purge);
+            "loading"
+        } else {
+            tc_lane.set_status(LaneState::None);
+            tc_lane.need_purge.set(false);
+            "unloading"
+        };
+        self.afc.logger.info(c, &format!("{} {} done", self.name, info_str));
+        self.current_move_distance.set(0.0);
+        self.afc.save_vars()?;
+        Ok(NEVER)
+    }
+
+    /// temp_check_cb: once the extruder is up to temperature, the move
+    fn temp_check_cb(&self, eventtime: f64) -> KResult<f64> {
+        let c = &AFC_EXTRUDER_AFCEXTRUDER_TEMP_CHECK_CB;
+        let heater = self.get_heater()?;
+        let (current_temp, target_temp) = heater.get_temp(eventtime);
+        let tol = self.afc.temp_wait_tolerance;
+        if current_temp >= target_temp - tol && current_temp <= target_temp + tol {
+            let tc_lane = self.tc_lane()?;
+            if self.tool_start_state.get() {
+                let info_str = if self.current_move_distance.get() > 0.0 { "loading to" } else { "unloading from" };
+                self.afc.logger.info(c, &format!("{} temp within range, {} nozzle", self.th_extruder_name, info_str));
+                self.move_extruder(self.current_move_distance.get())?;
+                let loaded = self.current_move_distance.get() > 0.0;
+                self.set_standalone_lane_states(loaded)?;
+                self.apply_virtual_tool_start_state(loaded);
+                if self.tool_start.as_deref() == Some("virtual") {
+                    tc_lane.load_state_raw.set(loaded);
+                    tc_lane.prep_state.set(loaded);
+                }
+            } else {
+                self.load_active.set(false);
+                tc_lane.set_unloaded()?;
+                self.afc.save_vars()?;
+                self.afc.logger.error(c, &format!("Filament is no longer detected at tool start sensor for {}.\nNot loading filament to nozzle.", self.name));
+            }
+            return Ok(NEVER);
+        }
+        self.afc.logger.debug(c, &format!("{}: waiting for temp: {}", self.th_extruder_name, py_float_repr(current_temp)));
+        Ok(self.afc.reactor.monotonic() + 1.0)
     }
 
     fn update_tool_stn(&self, length: f64) {
         let c = &AFC_EXTRUDER_AFCEXTRUDER__UPDATE_TOOL_STN;
         if length > 0.0 {
-            let msg = format!("tool_stn updated old: {}, new: {}{}", py_float_repr(self.tool_stn.get()), py_float_repr(length), self.common_save_msg);
+            let msg = format!("tool_stn updated old: {}, new: {}{}", self.tool_stn.str(), py_float_repr(length), self.common_save_msg);
             self.tool_stn.set(length);
             self.afc.logger.info(c, &msg);
         } else {
@@ -470,7 +912,7 @@ impl AfcExtruder {
     fn update_tool_stn_unload(&self, length: f64) {
         let c = &AFC_EXTRUDER_AFCEXTRUDER__UPDATE_TOOL_STN_UNLOAD;
         if length >= 0.0 {
-            let msg = format!("tool_stn_unload updated old: {}, new: {}{}", py_float_repr(self.tool_stn_unload.get()), py_float_repr(length), self.common_save_msg);
+            let msg = format!("tool_stn_unload updated old: {}, new: {}{}", self.tool_stn_unload.str(), py_float_repr(length), self.common_save_msg);
             self.tool_stn_unload.set(length);
             self.afc.logger.info(c, &msg);
         } else {
@@ -483,7 +925,7 @@ impl AfcExtruder {
         if length > 0.0 {
             let msg = format!(
                 "tool_sensor_after_extruder updated old: {}, new: {}{}",
-                py_float_repr(self.tool_sensor_after_extruder.get()),
+                self.tool_sensor_after_extruder.str(),
                 py_float_repr(length),
                 self.common_save_msg
             );
@@ -494,18 +936,61 @@ impl AfcExtruder {
         }
     }
 
-    /// The toolhead status LEDs (none: led_name is outside the native scope)
-    pub fn set_status_led(&self, _color: &str) -> KResult<()> {
-        Ok(())
+    /// set_status_led: the status_led_idx LEDs of the toolhead in a color
+    pub fn set_status_led(&self, color: &str) -> KResult<()> {
+        if !self.toolhead_led_found.get() {
+            return Ok(());
+        }
+        let Some(index) = &self.toolhead_status_index else { return Ok(()) };
+        let Some(helper) = self.toolhead_led.borrow().clone() else { return Ok(()) };
+        let color: Vec<f64> = color.split(',').map(|v| super::utils::py_float_of(&PyVal::Str(v.to_string()))).collect::<KResult<_>>()?;
+        for idx in index {
+            helper.set_color(Some(*idx), &color)?;
+        }
+        helper.check_transmit(None)
     }
 
-    /// set_print_leds: (success, error) - there is no toolhead LED object
-    pub fn set_print_leds(&self, _state: i64, quiet: bool) -> KResult<(bool, String)> {
-        let error_string = format!("led_name variable not set in [{}] config section", self.fullname);
-        if !quiet {
-            self.afc.logger.error(&AFC_EXTRUDER_AFCEXTRUDER_SET_PRINT_LEDS, &error_string);
+    /// set_print_leds: the toolhead's print LEDs (nozzle_led_idx, else all
+    /// but status_led_idx) on or off; (success, error)
+    pub fn set_print_leds(&self, state: i64, quiet: bool) -> KResult<(bool, String)> {
+        let c = &AFC_EXTRUDER_AFCEXTRUDER_SET_PRINT_LEDS;
+        if !self.toolhead_led_found.get() {
+            let error_string = format!("led_name variable not set in [{}] config section", self.fullname);
+            if !quiet {
+                self.afc.logger.error(c, &error_string);
+            }
+            return Ok((false, error_string));
         }
-        Ok((false, error_string))
+        let Some(helper) = self.toolhead_led.borrow().clone() else {
+            let error_string = "Cannot set print leds as status or check_transmit function are None".to_string();
+            self.afc.logger.error(c, &error_string);
+            return Ok((false, error_string));
+        };
+        let color = vec![state as f64; 4];
+        for idx in 1..self.status_led_count.get() + 1 {
+            if self.toolhead_status_index.as_ref().is_some_and(|s| !s.is_empty() && s.contains(&idx)) {
+                continue;
+            }
+            match &self.toolhead_nozzle_index {
+                Some(n) if !n.is_empty() => {
+                    if n.contains(&idx) {
+                        helper.set_color(Some(idx), &color)?;
+                    }
+                }
+                _ => helper.set_color(Some(idx), &color)?,
+            }
+        }
+        helper.check_transmit(None)?;
+        Ok((true, String::new()))
+    }
+
+    fn cmd_afc_set_extruder_led(&self, gcmd: &GCodeCommand) -> KResult<()> {
+        let state = gcmd.get_int("TURN_ON", Some(1), Lim::new())?;
+        let (success, error_string) = self.set_print_leds(state, false)?;
+        if !success {
+            return Err(gcmd.error(error_string));
+        }
+        Ok(())
     }
 
     /// Single toolhead printers: always on the shuttle
@@ -555,19 +1040,19 @@ impl AfcExtruder {
 
     fn cmd_save_extruder_values(&self, _gcmd: &GCodeCommand) -> KResult<()> {
         let f = &self.afc.function;
-        f.config_rewrite(&self.fullname, "tool_stn", &PyVal::Float(self.tool_stn.get()), "")?;
-        f.config_rewrite(&self.fullname, "tool_stn_unload", &PyVal::Float(self.tool_stn_unload.get()), "")?;
-        f.config_rewrite(&self.fullname, "tool_sensor_after_extruder", &PyVal::Float(self.tool_sensor_after_extruder.get()), "")
+        f.config_rewrite(&self.fullname, "tool_stn", &self.tool_stn.pv(), "")?;
+        f.config_rewrite(&self.fullname, "tool_stn_unload", &self.tool_stn_unload.pv(), "")?;
+        f.config_rewrite(&self.fullname, "tool_sensor_after_extruder", &self.tool_sensor_after_extruder.pv(), "")
     }
 
     pub fn get_status(&self) -> KResult<PyVal> {
         let opt = |v: &Option<String>| v.clone().map(PyVal::Str).unwrap_or(PyVal::None);
         Ok(PyVal::Dict(kaliru::pydict! {
-            "tool_stn" => PyVal::Float(self.tool_stn.get()),
-            "tool_stn_unload" => PyVal::Float(self.tool_stn_unload.get()),
-            "tool_sensor_after_extruder" => PyVal::Float(self.tool_sensor_after_extruder.get()),
-            "tool_unload_speed" => PyVal::Float(self.tool_unload_speed.get()),
-            "tool_load_speed" => PyVal::Float(self.tool_load_speed.get()),
+            "tool_stn" => self.tool_stn.pv(),
+            "tool_stn_unload" => self.tool_stn_unload.pv(),
+            "tool_sensor_after_extruder" => self.tool_sensor_after_extruder.pv(),
+            "tool_unload_speed" => self.tool_unload_speed.pv(),
+            "tool_load_speed" => self.tool_load_speed.pv(),
             "buffer" => opt(&self.buffer_name),
             "lane_loaded" => opt(&self.lane_loaded.borrow()),
             "tool_start" => opt(&self.tool_start),

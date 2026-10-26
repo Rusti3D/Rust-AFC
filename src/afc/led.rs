@@ -131,6 +131,11 @@ impl AfcLed {
         Ok(led)
     }
 
+    /// the chain's LEDHelper (python's AFCled.led_helper)
+    pub fn led_helper(&self) -> Option<Rc<LEDHelper>> {
+        self.led_helper.borrow().clone()
+    }
+
     fn helper(&self) -> KResult<Rc<LEDHelper>> {
         self.led_helper.borrow().clone().ok_or_else(|| super::no_attr("AFCled", "led_helper"))
     }

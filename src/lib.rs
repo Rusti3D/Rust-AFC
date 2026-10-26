@@ -37,6 +37,7 @@ const MODULES: &[PrinterModule] = &[
     module("AFC_prep", Some(afc::prep::load_config), None),
     module("AFC_spool", Some(afc::spool::load_config), None),
     module("AFC_stepper", None, Some(afc::stepper::load_config_prefix)),
+    module("AFC_Toolchanger", Some(afc::toolchanger::load_config_prefix), Some(afc::toolchanger::load_config_prefix)),
     module("AFC_vivid", None, Some(afc::boxturtle::load_config_prefix_vivid)),
 ];
 

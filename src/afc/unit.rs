@@ -86,6 +86,8 @@ pub enum UnitKind {
     Ace(Box<AceUnit>),
     /// BoxTurtle, NightOwl, QuattroBox (lanes with their own steppers)
     BoxTurtle(super::boxturtle::Family),
+    /// AFC_Toolchanger: its tools (toolchanger.rs)
+    Toolchanger,
 }
 
 /// [AFC_canvas]: a unit
@@ -332,6 +334,8 @@ impl AfcUnit {
                     self.set_logo_color(&self.led_logo_color)?;
                 }
             }
+            // (its logos are set when it is made)
+            UnitKind::Toolchanger => {}
         }
         Ok(())
     }
@@ -343,7 +347,7 @@ impl AfcUnit {
         *self.lanes.borrow_mut() = lanes.into_iter().collect();
         match &self.kind {
             UnitKind::Ace(_) => super::ace::unit_handle_ready(self),
-            UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) => Ok(()),
+            UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) | UnitKind::Toolchanger => Ok(()),
         }
     }
 
@@ -561,7 +565,7 @@ impl AfcUnit {
     pub fn lane_not_ready(&self, lane: &Rc<AfcLane>) -> KResult<()> {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_lane_not_ready(self, lane),
-            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => {
+            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) | UnitKind::Toolchanger => {
                 if !self.check_led_state(lane, "not_ready") {
                     return Ok(());
                 }
@@ -577,7 +581,7 @@ impl AfcUnit {
     pub fn lane_loaded(&self, lane: &Rc<AfcLane>, force: bool) -> KResult<()> {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_lane_led(self, lane, "lane_loaded", &self.afc.led_ready),
-            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => {
+            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) | UnitKind::Toolchanger => {
                 if !self.check_led_state(lane, "loaded") && !force {
                     return Ok(());
                 }
@@ -594,7 +598,7 @@ impl AfcUnit {
     pub fn lane_unloading(&self, lane: &Rc<AfcLane>) -> KResult<()> {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_lane_led(self, lane, "lane_unloading", &self.afc.led_unloading),
-            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => {
+            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) | UnitKind::Toolchanger => {
                 if !self.check_led_state(lane, "unloading") {
                     return Ok(());
                 }
@@ -606,7 +610,7 @@ impl AfcUnit {
     pub fn lane_unloaded(&self, lane: &Rc<AfcLane>) -> KResult<()> {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_lane_unloaded(self, lane),
-            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => {
+            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) | UnitKind::Toolchanger => {
                 if !self.check_led_state(lane, "unloaded") {
                     return Ok(());
                 }
@@ -634,6 +638,7 @@ impl AfcUnit {
                 }
                 Ok(())
             }
+            UnitKind::Toolchanger => self.base_lane_loading(lane),
         }
     }
 
@@ -661,7 +666,7 @@ impl AfcUnit {
     pub fn lane_tool_loaded(&self, lane: &Rc<AfcLane>) -> KResult<()> {
         let r = match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_lane_tool_led(self, lane, "lane_tool_loaded", &self.afc.led_tool_loaded, &self.afc.led_tool_loaded),
-            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => {
+            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) | UnitKind::Toolchanger => {
                 if !self.check_led_state(lane, "tool_loaded") {
                     Ok(())
                 } else {
@@ -680,7 +685,7 @@ impl AfcUnit {
     pub fn lane_tool_unloaded(&self, lane: &Rc<AfcLane>) -> KResult<()> {
         let r = match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_lane_tool_led(self, lane, "lane_tool_unloaded", &self.afc.led_ready, &self.afc.led_tool_unloaded),
-            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => {
+            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) | UnitKind::Toolchanger => {
                 if !self.check_led_state(lane, "tool_unloaded") {
                     Ok(())
                 } else {
@@ -702,7 +707,7 @@ impl AfcUnit {
             UnitKind::Canvas(_) => {
                 super::canvas::unit_lane_tool_led(self, lane, "lane_tool_loaded_idle", &self.afc.led_tool_loaded_idle, &self.afc.led_tool_loaded_idle)
             }
-            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => {
+            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) | UnitKind::Toolchanger => {
                 if !self.check_led_state(lane, "tool_loaded_idle") {
                     return Ok(());
                 }
@@ -716,7 +721,7 @@ impl AfcUnit {
     pub fn lane_fault(&self, lane: &Rc<AfcLane>) -> KResult<()> {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_lane_led(self, lane, "lane_fault", &self.afc.led_fault),
-            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => {
+            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) | UnitKind::Toolchanger => {
                 if !self.check_led_state(lane, "fault") {
                     return Ok(());
                 }
@@ -728,7 +733,7 @@ impl AfcUnit {
     pub fn lane_illuminate_spool(&self, lane: &Rc<AfcLane>) -> KResult<()> {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_lane_led(self, lane, "lane_illuminate_spool", &self.afc.led_spool_illum),
-            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) => {
+            UnitKind::Ace(_) | UnitKind::BoxTurtle(_) | UnitKind::Toolchanger => {
                 if let Some(i) = &lane.led_spool_index {
                     self.afc.function.afc_led(&PyVal::Str(lane.led_spool_illum()), Some(i))?;
                 }
@@ -817,7 +822,7 @@ impl AfcUnit {
         match &self.kind {
             UnitKind::Ace(_) => super::ace::check_runout(self, lane),
             UnitKind::BoxTurtle(super::boxturtle::Family::Htlf) => super::htlf::check_runout(self, lane),
-            UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) => Ok(false),
+            UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) | UnitKind::Toolchanger => Ok(false),
         }
     }
 
@@ -827,7 +832,14 @@ impl AfcUnit {
             UnitKind::Ace(_) => super::ace::system_test(self, cur_lane, assign_tcmd),
             UnitKind::BoxTurtle(super::boxturtle::Family::Htlf) => super::htlf::system_test(self, cur_lane, delay, assign_tcmd, enable_movement),
             UnitKind::BoxTurtle(_) => super::boxturtle::unit_system_test(self, cur_lane, delay, assign_tcmd, enable_movement),
+            UnitKind::Toolchanger => super::toolchanger::system_test(self, cur_lane, assign_tcmd),
         }
+    }
+
+    /// _print_function_not_defined, where the caller uses no result
+    fn print_not_defined(&self, name: &str) -> KResult<()> {
+        self.afc.logger.error(&AFC_UNIT_AFCUNIT__PRINT_FUNCTION_NOT_DEFINED, &format!("{} function not defined for {}", name, self.name));
+        Ok(())
     }
 
     /// _print_function_not_defined, and the TypeError of unpacking its None
@@ -841,6 +853,7 @@ impl AfcUnit {
             UnitKind::Canvas(_) => Ok((false, super::canvas::CALIBRATION_UNSUPPORTED.into(), 0.0)),
             UnitKind::Ace(_) => Ok((false, super::ace::CALIBRATION_LANE_MESSAGE.into(), 0.0)),
             UnitKind::BoxTurtle(_) => super::boxturtle::unit_calibrate_bowden(self, lane, dis, tol),
+            UnitKind::Toolchanger => Err(self.not_defined("calibrate_bowden")),
         }
     }
 
@@ -849,6 +862,7 @@ impl AfcUnit {
             UnitKind::Canvas(_) => Ok((false, super::canvas::CALIBRATION_UNSUPPORTED.into(), 0.0)),
             UnitKind::Ace(_) => Err(self.not_defined("calibrate_td1")),
             UnitKind::BoxTurtle(_) => super::boxturtle::unit_calibrate_td1(self, lane, dis, tol),
+            UnitKind::Toolchanger => Err(self.not_defined("calibrate_td1")),
         }
     }
 
@@ -860,13 +874,14 @@ impl AfcUnit {
                 Some(r) => Ok(r),
                 None => super::boxturtle::unit_calibrate_lane(self, lane, tol),
             },
+            UnitKind::Toolchanger => Err(self.not_defined("calibrate_lane")),
         }
     }
 
     pub fn calibration_lane_message(&self) -> String {
         match &self.kind {
             UnitKind::BoxTurtle(_) if super::vivid::is_selector_unit(self) => super::vivid::calibration_lane_message(self),
-            UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) => String::new(),
+            UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) | UnitKind::Toolchanger => String::new(),
             UnitKind::Ace(_) => super::ace::CALIBRATION_LANE_MESSAGE.into(),
         }
     }
@@ -875,7 +890,7 @@ impl AfcUnit {
     pub fn lane_reset_command(&self, lane: &AfcLane) -> Option<String> {
         match &self.kind {
             UnitKind::Ace(_) => Some(super::ace::get_lane_reset_command(self, lane)),
-            UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) => None,
+            UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) | UnitKind::Toolchanger => None,
         }
     }
 
@@ -883,7 +898,7 @@ impl AfcUnit {
     pub fn unit_load_lane(&self, lane: &Rc<AfcLane>, extruder: &AfcExtruder) -> KResult<Option<bool>> {
         match &self.kind {
             UnitKind::Ace(_) => super::ace::unit_load_lane(self, lane, extruder, false).map(Some),
-            UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) => Ok(None),
+            UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) | UnitKind::Toolchanger => Ok(None),
         }
     }
 
@@ -891,7 +906,7 @@ impl AfcUnit {
     pub fn unit_unload_lane(&self, lane: &Rc<AfcLane>, extruder: &AfcExtruder) -> KResult<Option<bool>> {
         match &self.kind {
             UnitKind::Ace(_) => super::ace::unit_unload_lane(self, lane, extruder).map(Some),
-            UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) => Ok(None),
+            UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) | UnitKind::Toolchanger => Ok(None),
         }
     }
 
@@ -961,6 +976,7 @@ impl AfcUnit {
             // (HTLF has no prep switches)
             UnitKind::BoxTurtle(super::boxturtle::Family::Htlf) => Ok(()),
             UnitKind::BoxTurtle(_) => super::boxturtle::unit_prep_load(self, lane),
+            UnitKind::Toolchanger => self.print_not_defined("prep_load"),
         }
     }
 
@@ -971,6 +987,7 @@ impl AfcUnit {
             // (ViViD, Claymore: nothing)
             UnitKind::BoxTurtle(_) if super::vivid::is_selector_unit(self) || super::htlf::is_htlf(self) => Ok(()),
             UnitKind::BoxTurtle(_) => super::boxturtle::unit_prep_post_load(self, lane),
+            UnitKind::Toolchanger => self.print_not_defined("prep_post_load"),
         }
     }
 
@@ -984,6 +1001,7 @@ impl AfcUnit {
                 }
                 super::boxturtle::unit_eject_lane(self, lane)
             }
+            UnitKind::Toolchanger => self.print_not_defined("eject_lane"),
         }
     }
 
@@ -1005,15 +1023,20 @@ impl AfcUnit {
             UnitKind::Canvas(_) => super::canvas::unit_move_to_hub(self, lane, dist, dir, use_homing, speed_mode),
             UnitKind::BoxTurtle(_) => super::boxturtle::unit_move_to_hub(self, lane, dist, dir, use_homing, speed_mode, assist_active),
             UnitKind::Ace(_) => lane.move_to(dist * dir.value(), speed_mode, &lane.hub_endstop_name(), assist_active, use_homing),
+            UnitKind::Toolchanger => Ok(super::toolchanger::no_move()),
         }
     }
 
     pub fn move_to_load(&self, lane: &Rc<AfcLane>, dist: f64, dir: MoveDirection, use_homing: bool, speed_mode: SpeedMode) -> KResult<(bool, f64, MoveWarning)> {
+        if let UnitKind::Toolchanger = self.kind {
+            return Ok(super::toolchanger::no_move());
+        }
         lane.move_to(dist * dir.value(), speed_mode, &lane.load_es(), AssistActive::Dynamic, use_homing)
     }
 
     pub fn load_then_home(&self, lane: &Rc<AfcLane>, distance: f64, assist_active: AssistActive, endstop: &Endstop) -> KResult<(bool, f64, MoveWarning)> {
         match &self.kind {
+            UnitKind::Toolchanger => Ok(super::toolchanger::no_move()),
             UnitKind::Canvas(_) => super::canvas::unit_load_then_home(self, lane, distance, endstop),
             UnitKind::Ace(_) => {
                 let home_to_tool = self.afc.homing_enabled && self.afc.home_to_tool;

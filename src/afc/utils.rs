@@ -54,6 +54,40 @@ pub fn py_int_of(v: &PyVal) -> KResult<i64> {
 }
 
 /// float(v)
+/// A float setting as python holds it: config.getfloat's int default stays an
+/// int (prints "72", not "72.0") until a float replaces it
+pub struct PyNum {
+    v: Cell<f64>,
+    int: Cell<bool>,
+}
+
+impl PyNum {
+    pub fn new(v: &PyVal) -> PyNum {
+        PyNum { v: Cell::new(v.as_f64().unwrap_or(0.0)), int: Cell::new(matches!(v, PyVal::Int(_))) }
+    }
+
+    pub fn get(&self) -> f64 {
+        self.v.get()
+    }
+
+    pub fn set(&self, v: f64) {
+        self.v.set(v);
+        self.int.set(false);
+    }
+
+    pub fn pv(&self) -> PyVal {
+        if self.int.get() {
+            PyVal::Int(self.v.get() as i64)
+        } else {
+            PyVal::Float(self.v.get())
+        }
+    }
+
+    pub fn str(&self) -> String {
+        self.pv().str()
+    }
+}
+
 pub fn py_float_of(v: &PyVal) -> KResult<f64> {
     match v.get() {
         PyVal::Int(i) => Ok(*i as f64),
@@ -310,6 +344,75 @@ pub fn add_filament_switch(switch_name: &str, switch_pin: &str, printer: &Rc<Pri
         *rh.runout_handler_hook.borrow_mut() = Some(cb.clone());
     }
     Ok((fila, debounce_button))
+}
+
+/// VirtualFilamentSensor: a filament sensor without hardware, its gui switch
+/// (SET_FILAMENT_SENSOR ENABLE=) standing for the filament (a toolhead
+/// without a sensor: pin_tool_start virtual); no runout callback
+pub struct VirtualSensor {
+    pub name: String,
+    pub sensor_enabled: Cell<bool>,
+    pub filament_present: Cell<bool>,
+    enable_cb: RefCell<Option<Rc<dyn Fn(bool) -> KResult<()>>>>,
+}
+
+impl kaliru::printer::PrinterObject for VirtualSensor {
+    fn has_status(&self) -> bool {
+        true
+    }
+    fn get_status(&self, _eventtime: f64) -> Option<PyVal> {
+        Some(PyVal::Dict(kaliru::pydict! {
+            "filament_detected" => PyVal::Bool(self.filament_present.get()),
+            "enabled" => PyVal::Bool(self.sensor_enabled.get()),
+        }))
+    }
+}
+
+impl VirtualSensor {
+    pub fn new(printer: &Rc<Printer>, name: &str, show_in_gui: bool, enable_cb: Rc<dyn Fn(bool) -> KResult<()>>) -> KResult<Rc<VirtualSensor>> {
+        let s = Rc::new(VirtualSensor { name: name.to_string(), sensor_enabled: Cell::new(false), filament_present: Cell::new(false), enable_cb: RefCell::new(Some(enable_cb)) });
+        let object_name = format!("{}filament_switch_sensor {}", if show_in_gui { "" } else { "_" }, name);
+        if printer.add_object(&object_name, s.clone()).is_err() {
+            // Fallback: direct dict registration
+            printer.objects_set_default(&object_name, s.clone());
+        }
+        let gcode = printer.lookup::<kaliru::gcode::GCodeDispatch>("gcode")?;
+        let q = s.clone();
+        let _ = gcode.register_mux_command(
+            "QUERY_FILAMENT_SENSOR",
+            "SENSOR",
+            Some(name),
+            Rc::new(move |g| {
+                let detected = if q.filament_present.get() { "filament detected" } else { "filament not detected" };
+                g.respond_info(&format!("Filament Sensor {}: {}", q.name, detected), true);
+                Ok(())
+            }),
+            Some("Query the status of the Filament Sensor"),
+        );
+        let w = Rc::downgrade(&s);
+        let _ = gcode.register_mux_command(
+            "SET_FILAMENT_SENSOR",
+            "SENSOR",
+            Some(name),
+            Rc::new(move |g| {
+                let enable = g.get_int("ENABLE", Some(1), Lim::new().min(0.0).max(1.0))? != 0;
+                let Some(s) = w.upgrade() else { return Ok(()) };
+                s.sensor_enabled.set(enable);
+                let cb = s.enable_cb.borrow().clone();
+                match cb {
+                    Some(cb) => cb(enable),
+                    None => Ok(()),
+                }
+            }),
+            Some("Sets the filament sensor on/off"),
+        );
+        Ok(s)
+    }
+
+    /// VirtualRunoutHelper.note_filament_present: the state, on a change
+    pub fn note_filament_present(&self, present: bool) {
+        self.filament_present.set(present);
+    }
 }
 
 pub type ButtonAction = Rc<dyn Fn(f64, bool) -> KResult<()>>;
