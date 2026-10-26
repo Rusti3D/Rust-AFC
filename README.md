@@ -7,6 +7,17 @@ kaliru's lower CPU and memory use (no Python interpreter on the printer for AFC)
 
 Credit where it's due: AFC is Armored Turtle's work. Please support the upstream project.
 
+> **Runs on real printers:** Rust-AFC is built into [Rusticc](https://github.com/Rusti3D/rusticc) (release
+> 0.0.2), where it drives an Elegoo Centauri Carbon's ACE Pro natively. Early days: please report issues here.
+
+## Getting it
+
+- **Elegoo Centauri Carbon:** install [Rusticc](https://github.com/Rusti3D/rusticc); Rust-AFC is built in.
+- **Other printers:** the [releases](https://github.com/Rusti3D/Rust-AFC/releases) have `kaliru-afc`
+  (x86_64 and armv7 Linux, glibc): [kaliru](https://github.com/Rusti3D/kaliru) with AFC built in. Run it in
+  place of Kalico's `python klippy.py` (same command line and config), with the AFC add-on installed as usual
+  for its macros and configs; AFC then runs natively.
+
 ## How it plugs in
 
 kaliru's native plugins are built in: a distribution builds its kaliru binary with the plugins it wants
@@ -26,7 +37,7 @@ plugin layer, unchanged.
 
 | covered natively | still Python AFC |
 |---|---|
-| AFC core, prep, hubs, extruders (no toolchanger options, no buffer as toolhead sensor), lanes of the units below, spool, error, stats; stepper lanes (`AFC_stepper`) of BoxTurtle, NightOwl, QuattroBox, EMU; selector units (ViViD, Claymore, HTLF: `AFC_lane` lanes on the unit's drive and selector steppers); espoolers (N20 assist motors); `AFC_led`; switched (TurtleNeck) `AFC_buffer`; `AFC_button`, `AFC_form_tip`, `AFC_poop`; Elegoo Canvas (`AFC_canvas`, needs COSMOS's drv8833 module); Anycubic ACE Pro / ACE 2 Pro ([cosmoace_afc](https://github.com/Rusti3D)'s `AFC_ACE`) | Toolchanger, OpenAMS / OAMS; FPS_PSF buffers; Snapmaker U1 options |
+| AFC core, prep, hubs, extruders, lanes, spool, error, stats; stepper lanes (`AFC_stepper`) of BoxTurtle, NightOwl, QuattroBox, EMU; selector units (ViViD, Claymore, HTLF); Toolchanger (`AFC_Toolchanger`, toolhead LEDs); OpenAMS / OAMS (`AFC_OpenAMS`, `AFC_OAMS`); espoolers (N20 assist motors); `AFC_led`; switched (TurtleNeck) and FPS_PSF `AFC_buffer`; `AFC_button`, `AFC_form_tip`, `AFC_poop`; Elegoo Canvas (`AFC_canvas`, needs COSMOS's drv8833 module); Anycubic ACE Pro / ACE 2 Pro ([cosmoace_afc](https://github.com/Rusti3D)'s `AFC_ACE`) | klipper-toolchanger `tool` objects on extruders; Snapmaker U1 options; a buffer as the toolhead sensor |
 
 Ported against AFC 1.2.7 as COSMOS ships it. The plan and progress are in [STATUS.md](STATUS.md) and
 [docs/PLAN.md](docs/PLAN.md).
