@@ -1,0 +1,41 @@
+# fake_moonraker
+# An OpenAMS (configs/openams.cfg), the OAMS board's messages delivered by
+# TEST_MCU_MSG: a spool in bay 0 (its F1S sensor) readies lane0 at the next
+# sensor poll; T0 loads it (the firmware's load result arrives while the load
+# waits for it, the encoder moves during the engagement check); TOOL_UNLOAD
+# with the firmware reporting bay 0 loaded (its unload answered); the OAMS
+# commands (AFC_STOP_OAMS_FOLLOWER's macro passes no OAMS= in AFC, so its
+# command itself), an unload the firmware answers NO_SPOOL_IN_BAY; the spool taken
+# out; last a hub HES calibration the firmware fails (an error: exit 255)
+CONFIG ../configs/openams.cfg
+DICTIONARY atmega2560.dict oams=oams.dict
+
+G4 P1000
+SET_KINEMATIC_POSITION X=100 Y=100 Z=10
+PREP
+WAIT 6
+TEST_MCU_MSG MCU=oams NAME=oams_cmd_stats FPS_VALUE=1056964608 F1S_HES_VALUE_0=1 F1S_HES_VALUE_1=0 F1S_HES_VALUE_2=0 F1S_HES_VALUE_3=0 HUB_HES_VALUE_0=0 HUB_HES_VALUE_1=0 HUB_HES_VALUE_2=0 HUB_HES_VALUE_3=0 ENCODER_CLICKS=0
+WAIT 3
+TEST_MCU_MSG MCU=oams NAME=oams_action_status DELAY=4 ACTION=0 CODE=0 VALUE=0
+TEST_MCU_MSG MCU=oams NAME=oams_cmd_stats DELAY=7 FPS_VALUE=1056964608 F1S_HES_VALUE_0=1 F1S_HES_VALUE_1=0 F1S_HES_VALUE_2=0 F1S_HES_VALUE_3=0 HUB_HES_VALUE_0=0 HUB_HES_VALUE_1=0 HUB_HES_VALUE_2=0 HUB_HES_VALUE_3=0 ENCODER_CLICKS=40
+T0
+WAIT 2
+TEST_MCU_ANSWER MCU=oams QUERY=oams_cmd_query_spool RESPONSE=oams_query_response_spool SPOOL=0
+TEST_MCU_MSG MCU=oams NAME=oams_action_status DELAY=5 ACTION=1 CODE=0 VALUE=0
+TOOL_UNLOAD LANE=lane0
+WAIT 3
+TEST_MCU_ANSWER MCU=oams QUERY=oams_cmd_query_spool RESPONSE=oams_query_response_spool SPOOL=255
+OAMS_RETRY_STATUS OAMS=1
+OAMS_FOLLOWER OAMS=1 ENABLE=1 DIRECTION=1
+_AFC_STOP_OAMS_FOLLOWER OAMS=1
+TEST_MCU_MSG MCU=oams NAME=oams_action_status DELAY=1 ACTION=1 CODE=4 VALUE=0
+OAMS_UNLOAD_SPOOL OAMS=1
+OAMS_PID_SET OAMS=1 P=6 I=0.1 D=0
+OAMS_ABORT_ACTION OAMS=1
+AFC_OAMS_CLEAR_ERRORS UNIT=AMS_1
+LANE_MOVE LANE=lane0 DISTANCE=10
+TEST_MCU_MSG MCU=oams NAME=oams_cmd_stats FPS_VALUE=1056964608 F1S_HES_VALUE_0=0 F1S_HES_VALUE_1=0 F1S_HES_VALUE_2=0 F1S_HES_VALUE_3=0 HUB_HES_VALUE_0=0 HUB_HES_VALUE_1=0 HUB_HES_VALUE_2=0 HUB_HES_VALUE_3=0 ENCODER_CLICKS=40
+WAIT 3
+AFC_STATUS
+TEST_MCU_MSG MCU=oams NAME=oams_action_status DELAY=1 ACTION=6 CODE=1 VALUE=0
+OAMS_CALIBRATE_HUB_HES OAMS=1 SPOOL=0

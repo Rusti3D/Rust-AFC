@@ -1331,8 +1331,10 @@ impl AfcLane {
         // Stepperless units have no drive stepper: the unit's firmware-driven
         // lane_move does the move
         if let Some(unit) = self.unit_obj_opt().filter(|u| u.stepperless_drive.get()) {
-            if let super::unit::UnitKind::Ace(_) = unit.kind {
-                return super::ace::lane_move(&unit, self, distance);
+            match unit.kind {
+                super::unit::UnitKind::Ace(_) => return super::ace::lane_move(&unit, self, distance),
+                super::unit::UnitKind::OpenAms(_) => return super::openams::lane_move(&unit, self),
+                _ => {}
             }
         }
         let (speed, accel) = self.get_speed_accel(speed_mode);
@@ -1417,6 +1419,10 @@ impl AfcLane {
 
     fn prep_capture_td1(&self) -> KResult<()> {
         if self.settings().td1_when_loaded.unwrap_or(false) {
+            // A stepperless unit captures through its own feed path
+            if self.unit_obj()?.prep_capture_td1(&self.rc())?.is_some() {
+                return Ok(());
+            }
             if !self.hub_obj()?.state() && self.afc.function.get_current_lane_obj().is_none() {
                 self.get_td1_data()?;
             } else {
@@ -1436,6 +1442,12 @@ impl AfcLane {
         } else {
             self.load_state_raw.get()
         }
+    }
+
+    /// _load_suppressed: the next load-sensor insert is the unit's own
+    /// operation, not a new spool
+    pub fn set_load_suppressed(&self, v: bool) {
+        self.load_suppressed.set(v);
     }
 
     pub fn raw_load_state(&self) -> bool {
@@ -1481,10 +1493,13 @@ impl AfcLane {
                 if disabled && self.afc.function.is_printing(false)? {
                     self.afc.logger.warning(c, "Load runout has been detected, but pause and runout detection has been disabled");
                 } else if self.unit_obj()?.check_runout(&me)? {
-                    if self.runout_lane.borrow().is_some() {
-                        self.perform_infinite_runout()?;
-                    } else {
-                        self.perform_pause_runout()?;
+                    // the unit's own runout handling, else infinite spool / pause
+                    if !self.unit_obj()?.handle_runout(&me)? {
+                        if self.runout_lane.borrow().is_some() {
+                            self.perform_infinite_runout()?;
+                        } else {
+                            self.perform_pause_runout()?;
+                        }
                     }
                 } else if self.status.get().as_str() != "calibrating" {
                     self.set_unloaded()?;
@@ -2106,6 +2121,12 @@ impl AfcLane {
     pub fn get_td1_data(&self) -> KResult<(bool, String)> {
         let c = &AFC_LANE_AFCLANE_GET_TD1_DATA;
         let me = self.rc();
+        // A stepperless unit feeds to the TD-1, reads and retracts itself
+        if let Some(unit) = self.unit_obj_opt() {
+            if let Some(r) = unit.capture_td1_data(&me)? {
+                return Ok(r);
+            }
+        }
         let mut status = true;
         let mut msg = String::new();
         let td1_id = self.td1_device_id.borrow().clone();

@@ -23,6 +23,8 @@ BIN=${KALIRU_AFC_BIN:-$HOME/rk/target-rafc/release/kaliru-afc}
 STATE=/tmp/rust_afc_state
 K=$KALICO/klippy
 installed=()
+# the test-only MCU dictionaries (tests/dicts: an OpenAMS board, tools/make_oams_dict.py)
+cp "$HERE"/tests/dicts/*.dict /ci_build/dict/
 for f in "$AFC_SRC"/afc_extras/*.py; do cp "$f" $K/extras/; installed+=("$K/extras/$(basename "$f")"); done
 # (the AFC_ACE unit the native ACE follows: tests/reference/AFC_ACE, or ACE_SRC)
 cp -r "${ACE_SRC:-$HERE/tests/reference/AFC_ACE}" $K/plugins/AFC_ACE && installed+=("$K/plugins/AFC_ACE")

@@ -1183,7 +1183,7 @@ impl AfcFunction {
                         "AFC_CALI_FAIL TITLE='{} Failed' FAIL={} DISTANCE={} msg='{}' RESET=1",
                         title,
                         t,
-                        py_float_repr(pos),
+                        pos.str(),
                         fail_string
                     ))?;
                     return Ok(());
@@ -1298,7 +1298,10 @@ impl AfcFunction {
         prompt.p_end();
         // Stepperless units retract through their own reset command
         if let Some(reset_cmd) = cur_lane.unit_obj()?.lane_reset_command(&cur_lane) {
-            afc.gcode.run_script_from_command(&reset_cmd)?;
+            match reset_cmd {
+                Some(cmd) => afc.gcode.run_script_from_command(&cmd)?,
+                None => afc.logger.info(c, &format!("{} does not support distance-based reset for its unit type", lane)),
+            }
             return Ok(());
         }
         afc.gcode.respond_info(&format!("Resetting {} to hub", lane), true);

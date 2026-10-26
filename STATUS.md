@@ -30,21 +30,19 @@ Python AFC on kaliru's plugin layer stays the fallback until the port is complet
   COSMOS); their lanes are calibrated (a first ViViD load rewrites config files).
 
 ## Queue
-- [ ] Toolchanger batch (committed locally, NOT pushed): AFC_Toolchanger (src/afc/toolchanger.rs), standalone
-  tool lanes, virtual tool_start sensor, toolhead LEDs (led_name / status_led_idx / nozzle_led_idx),
-  python's int defaults for tool_stn & co (utils::PyNum); kaliru led::led_helper_of (uncommitted in kaliru).
-  Verified so far: toolchanger_flow and bt_toolhead_led identical (single runs; toolchanger natively, no
-  libpython). Still to run: kaliru rustify_gate, kaliru commit + push, bump kaliru rev, the full
-  afc_cmp gate (26 cases x3), then push. The gate run was stopped by Claude Code for low host memory
-  (2026-10-26); rerun when memory allows.
+- [ ] Toolchanger + FPS_PSF (committed 8593bfa + 9953e5a, NOT pushed; kaliru b6e867d pushed): one full gate
+  27/27 identical, clippy 0; two more runs going. Then push.
+- [ ] OpenAMS / OAMS (uncommitted: src/afc/oams.rs, openams.rs, unit/lane/functions/scope wiring,
+  calibrate_td1 returns a PyVal distance (python's int 0 printed "DISTANCE=0")). Harness: TEST_MCU_MSG
+  (tests/plugins/test_mcu_msg.py, src/test_mcu_msg.rs) delivers an MCU message to its handler, DELAY from a
+  timer; tests/dicts/oams.dict from tools/make_oams_dict.py (response types assumed); kaliru needs
+  Mcu::is_shutdown + SerialReader::response_handler (uncommitted in kaliru). Case: openams_flow.
+  Next: afc_cmp.sh copies tests/dicts/*.dict to /ci_build/dict; build; run openams_flow; a runout case.
+- [ ] Snapmaker U1 options; klipper-toolchanger `tool` objects (expand kaliru as needed).
 - [ ] Rusticc: next image picks up Rust-AFC (user decides when).
-- [ ] M4 FPS_PSF buffer (AFC_buffer.py AFCFPSBuffer + FPSEndstopWrapper: ADC, software endstops; batch
-  mode gets no ADC reports), OpenAMS / OAMS (custom MCU commands: needs a dictionary with them),
-  Snapmaker U1 options; klipper-toolchanger `tool` objects (python objects natively unreachable).
 
 ## Next
-1. Finish the toolchanger batch: kaliru `tools/rustify_gate.sh` (must match), commit + push kaliru
-   (led_helper_of), bump Cargo.toml kaliru rev, full `afc_cmp.sh` three times, clippy, push Rust-AFC.
+1. Push the toolchanger/FPS commits once the repeat runs match; then the OpenAMS batch above.
 
 ## Verify
 `bash tools/afc_cmp.sh` (WSL, ~10 min for 14 cases); cargo clippy --release with CARGO_TARGET_DIR=~/rk/target-rafc
@@ -55,7 +53,7 @@ under the shared lock /tmp/rustify_gates.lock.
   ("klippy.kinematics.extruder.ExtruderStepper.__init__ is not mirrored yet"), so stepper configs outside the
   native scope do not start (kaliru plugin-layer coverage).
 - Not native (scope.rs keeps Python): a buffer as tool_start; no pin_tool_start + pin_tool_end + a buffer
-  (calibration sets tool_start to "buffer"); FPS_PSF buffers; LED indexes on Canvas/ACE lanes (untested).
+  (calibration sets tool_start to "buffer"); LED indexes on Canvas/ACE lanes (untested).
 - AFC_ACE _motion_active reads the unit's "busy" as the slot's: with two slots of one ACE moving, a lost
   reply on one is taken as started. Rare in use; kept as the python AFC has it.
 - A real-pin [AFC_hub] with runout off: the break check reaches AFC's handle_toolhead_runout, which reads

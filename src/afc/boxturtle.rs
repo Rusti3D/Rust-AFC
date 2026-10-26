@@ -552,7 +552,7 @@ pub fn unit_calibrate_bowden(unit: &AfcUnit, cur_lane: &Rc<AfcLane>, dis: f64, t
     }
 }
 
-pub fn unit_calibrate_td1(unit: &AfcUnit, cur_lane: &Rc<AfcLane>, dis: f64, tol: f64) -> KResult<(bool, String, f64)> {
+pub fn unit_calibrate_td1(unit: &AfcUnit, cur_lane: &Rc<AfcLane>, dis: f64, tol: f64) -> KResult<(bool, String, PyVal)> {
     let c = &AFC_BOXTURTLE_AFCBOXTURTLE_CALIBRATE_TD1;
     let afc = &unit.afc;
     let mut bow_pos = Num::i(0);
@@ -561,7 +561,7 @@ pub fn unit_calibrate_td1(unit: &AfcUnit, cur_lane: &Rc<AfcLane>, dis: f64, tol:
     let Some(td1_device_id) = cur_lane.td1_device_id.borrow().clone() else {
         let mut msg = format!("Cannot calibrate TD-1 for {}, td1_device_id is a required ", cur_lane.name);
         msg += "field in AFC_hub or per AFC_lane";
-        return Ok((false, msg, 0.0));
+        return Ok((false, msg, PyVal::Int(0)));
     };
 
     // Store variable locally so check only happens once
@@ -572,7 +572,7 @@ pub fn unit_calibrate_td1(unit: &AfcUnit, cur_lane: &Rc<AfcLane>, dis: f64, tol:
     if !valid {
         let mut msg = format!("TD-1 device(SN: {}) not detected anymore, ", td1_device_id);
         msg += "please check before continuing to calibrate TD-1 bowden length";
-        return Ok((valid, msg, 0.0));
+        return Ok((valid, msg, PyVal::Int(0)));
     }
 
     afc.logger.raw(c, &format!("Calibrating bowden length to TD-1 device with {}", cur_lane.name));
@@ -586,7 +586,7 @@ pub fn unit_calibrate_td1(unit: &AfcUnit, cur_lane: &Rc<AfcLane>, dis: f64, tol:
         if !success {
             // if movement does not succeed fault and return values to calibration macro
             cur_lane.do_enable(false)?;
-            return Ok((false, format!("Failed {} after {}mm", checkpoint, hub_pos.str()), hub_pos.v));
+            return Ok((false, format!("Failed {} after {}mm", checkpoint, hub_pos.str()), hub_pos.pv()));
         }
     }
 
@@ -596,7 +596,7 @@ pub fn unit_calibrate_td1(unit: &AfcUnit, cur_lane: &Rc<AfcLane>, dis: f64, tol:
         if bow_pos.v > max_bowden_length {
             // fault if move to TD-1 is not detected
             cur_lane.do_enable(false)?;
-            return Ok((false, format!("TD-1 failed to detect filament after moving {}mm", bow_pos.str()), bow_pos.v));
+            return Ok((false, format!("TD-1 failed to detect filament after moving {}mm", bow_pos.str()), bow_pos.pv()));
         }
         compare_time = utils::datetime_now();
         bow_pos = bow_pos.add(Num::f(dis));
@@ -636,7 +636,7 @@ pub fn unit_calibrate_td1(unit: &AfcUnit, cur_lane: &Rc<AfcLane>, dis: f64, tol:
     cur_lane.do_enable(false)?;
     cur_lane.unit_obj()?.return_to_home(false)?;
     afc.save_vars()?;
-    Ok((true, "td1_bowden_length calibration successful".into(), bow_pos.v))
+    Ok((true, "td1_bowden_length calibration successful".into(), bow_pos.pv()))
 }
 
 pub fn unit_calibrate_lane(unit: &AfcUnit, cur_lane: &Rc<AfcLane>, tol: f64) -> KResult<(bool, String, f64)> {

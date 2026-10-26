@@ -23,6 +23,8 @@ const MODULES: &[PrinterModule] = &[
     module("AFC_buffer", None, Some(afc::buffer::load_config_prefix)),
     module("AFC_button", None, Some(afc::button::load_config_prefix)),
     module("AFC_NightOwl", None, Some(afc::boxturtle::load_config_prefix_night_owl)),
+    module("AFC_OAMS", None, Some(afc::oams::load_config_prefix)),
+    module("AFC_OpenAMS", None, Some(afc::openams::load_config_prefix)),
     module("AFC_QuattroBox", None, Some(afc::boxturtle::load_config_prefix_quattro_box)),
     module("AFC_canvas", None, Some(afc::canvas::load_config_prefix_unit)),
     module("AFC_canvas_lane", None, Some(afc::canvas::load_config_prefix_lane)),

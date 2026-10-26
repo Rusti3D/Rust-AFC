@@ -5,7 +5,7 @@ use kaliru::configfile::ConfigWrapper;
 use kaliru::error::KResult;
 
 /// The AFC modules the native AFC replaces (klippy/extras names)
-pub const NATIVE_MODULES: [&str; 25] = [
+pub const NATIVE_MODULES: [&str; 27] = [
     "AFC",
     "AFC_functions",
     "AFC_spool",
@@ -26,6 +26,8 @@ pub const NATIVE_MODULES: [&str; 25] = [
     "AFC_Claymore",
     "AFC_HTLF",
     "AFC_Toolchanger",
+    "AFC_OAMS",
+    "AFC_OpenAMS",
     "AFC_led",
     "AFC_buffer",
     "AFC_button",
@@ -89,6 +91,19 @@ pub fn native_scope(config: &ConfigWrapper) -> KResult<Result<(), String>> {
                 if selector_unit {
                     if opt(s, "step_pin").is_some() {
                         return Ok(Err(format!("[{}] step_pin", s)));
+                    }
+                    continue;
+                }
+                // an OpenAMS lane (the firmware feeds it)
+                let openams_unit = opt(s, "unit").is_some_and(|u| {
+                    let unit = u.split(':').next().unwrap_or("").trim().to_string();
+                    sections.iter().any(|x| *x == format!("AFC_OpenAMS {}", unit))
+                });
+                if openams_unit {
+                    for o in ["selector", "step_pin"] {
+                        if opt(s, o).is_some() {
+                            return Ok(Err(format!("[{}] {}", s, o)));
+                        }
                     }
                     continue;
                 }
