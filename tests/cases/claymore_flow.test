@@ -1,0 +1,24 @@
+# fake_moonraker
+# A Claymore (configs/claymore_flow.cfg: sensors following the homing
+# moves): a spool into lane1 trips its load switch, which a Claymore also
+# takes as prep, so lane1 is selected and homed through the drive stepper;
+# then a tool load (the hub move homes to the hub switch), the unload and an
+# eject (the BoxTurtle eject)
+CONFIG ../configs/claymore_flow.cfg
+DICTIONARY atmega2560.dict Turtle_1=stm32h723.dict
+
+G4 P1000
+SET_KINEMATIC_POSITION X=100 Y=100 Z=10
+WAIT 6
+TEST_BUTTON PIN=^!Turtle_1:TRG1 STATE=1
+TEST_BUTTON PIN=^Turtle_1:EXT1 STATE=1
+WAIT 6
+T0
+WAIT 3
+TEST_BUTTON PIN=^PK1 STATE=0
+WAIT 2
+TOOL_UNLOAD LANE=lane1
+WAIT 3
+LANE_UNLOAD LANE=lane1
+WAIT 3
+AFC_STATUS

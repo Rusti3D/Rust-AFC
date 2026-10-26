@@ -27,13 +27,16 @@ use kaliru::stepper::McuStepper;
 use kaliru::toolhead::ToolHead;
 use kaliru::IndexMap;
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 const CMD_AFC_STEPPER_HOME_HELP: &str = "Command a manually home stepper to specified endstop";
 
 /// The stepper part of an [AFC_stepper] lane (AFCExtruderStepper's own state)
 pub struct StepperLane {
     pub extruder_stepper: Rc<ExtruderStepper>,
+    /// the lane whose assist_move runs while it drives (python swaps the
+    /// drive stepper's assist_move for the lane's around a homing move)
+    assist_override: RefCell<Option<Weak<AfcLane>>>,
     stepper_enable: Rc<PrinterStepperEnable>,
     synced_to_extruder: Cell<bool>,
     print_current_set: Cell<bool>,
@@ -128,6 +131,7 @@ impl StepperLane {
         // Get and save base rotation dist
         let base_rotation_dist = extruder_stepper.stepper.get_rotation_distance().0;
         Ok(Rc::new(StepperLane {
+            assist_override: RefCell::new(None),
             extruder_stepper,
             stepper_enable,
             synced_to_extruder: Cell::new(false),
@@ -349,6 +353,59 @@ pub fn add_lane_endstops(lane: &AfcLane) -> KResult<()> {
     Ok(())
 }
 
+/// _get_steppers for a lane driven by its unit's drive stepper: the lane's
+/// endstops (but its selector) home the drive stepper
+pub fn add_endstops_to_drive(drive: &AfcLane, lane: &AfcLane) -> KResult<()> {
+    let st = stepper_of(drive)?;
+    for es in lane.endstops.borrow().values() {
+        if es.endstop_name.contains(HOMING_SELECTOR) {
+            continue;
+        }
+        es.endstop.add_stepper(st.stepper())?;
+        st.endstops.borrow_mut().insert(es.endstop_name.clone(), (es.endstop.clone(), es.endstop_name.clone()));
+    }
+    Ok(())
+}
+
+/// the lane's selector endstop homes the unit's selector stepper
+pub fn add_selector_endstop(selector: &AfcLane, lane: &AfcLane) -> KResult<()> {
+    let st = stepper_of(selector)?;
+    if let Some(es) = lane.endstops.borrow().get(HOMING_SELECTOR) {
+        es.endstop.add_stepper(st.stepper())?;
+        st.endstops.borrow_mut().insert(es.endstop_name.clone(), (es.endstop.clone(), es.endstop_name.clone()));
+    }
+    Ok(())
+}
+
+/// an endstop of the unit's (HTLF's home switch) on its selector stepper
+pub fn add_named_endstop(selector: &AfcLane, endstop: &EndstopRef, name: &str) -> KResult<()> {
+    let st = stepper_of(selector)?;
+    endstop.add_stepper(st.stepper())?;
+    st.endstops.borrow_mut().insert(name.to_string(), (endstop.clone(), name.to_string()));
+    Ok(())
+}
+
+/// the lane whose assist_move runs for this stepper's moves
+fn assist_lane(lane: &AfcLane) -> Option<Rc<AfcLane>> {
+    lane.stepper.borrow().as_ref().and_then(|st| st.assist_override.borrow().as_ref().and_then(|w| w.upgrade()))
+}
+
+/// home_to on a drive stepper for a lane it drives: the lane's assist runs
+#[allow(clippy::too_many_arguments)]
+pub fn home_to_for(drive: &Rc<AfcLane>, lane: &AfcLane, endstop: &Endstop, distance: f64, speed: &PyVal, accel: &PyVal, triggered: bool, check_trigger: bool, assist_active: bool) -> KResult<(bool, f64, bool)> {
+    let st = stepper_of(drive)?;
+    *st.assist_override.borrow_mut() = Some(lane.me_weak());
+    let r = home_to(drive, endstop, distance, speed, accel, triggered, check_trigger, assist_active);
+    *st.assist_override.borrow_mut() = None;
+    r
+}
+
+/// do_homing_move, called by a unit (ViViD's selector)
+#[allow(clippy::too_many_arguments)]
+pub fn do_homing_move_pub(lane: &Rc<AfcLane>, movepos: f64, speed: &PyVal, accel: &PyVal, endstop_spec: &str, triggered: bool, check_trigger: bool, assist_active: bool) -> KResult<(bool, f64)> {
+    do_homing_move(lane, movepos, speed, accel, endstop_spec, triggered, check_trigger, assist_active)
+}
+
 /// _submit_move: the move from position 0 onto the lane's trapq; its duration
 fn submit_move(st: &StepperLane, movetime: f64, distance: f64, speed: f64, accel: f64) -> f64 {
     st.stepper().set_position(&[0.0, 0.0, 0.0]);
@@ -363,7 +420,9 @@ fn do_move(lane: &AfcLane, distance: f64, speed: f64, accel: f64, assist_active:
     if sync {
         sync_print_time(lane)?;
     }
-    lane.assist_move(speed, distance < 0.0, assist_active, || {
+    let assist = assist_lane(lane);
+    let assist = assist.as_deref().unwrap_or(lane);
+    assist.assist_move(speed, distance < 0.0, assist_active, || {
         // Code based off force_move.py manual_move function
         let toolhead = toolhead(lane)?;
         toolhead.flush_step_generation()?;
@@ -613,7 +672,9 @@ fn do_homing_move(lane: &Rc<AfcLane>, movepos: f64, speed_pv: &PyVal, accel_pv: 
     let rewind = movepos < st.manual_axis_pos.get();
     let start_mcu_pos = st.stepper().get_mcu_position(None);
     let toolhead: Rc<dyn HomingToolhead> = Rc::new(HomingLane(lane.clone()));
-    let homed = lane.assist_move(speed, rewind, assist_active, || phoming.manual_home(&toolhead, vec![endstop], &pos, speed, triggered, check_trigger));
+    let assist = assist_lane(lane);
+    let assist = assist.as_deref().unwrap_or(lane);
+    let homed = assist.assist_move(speed, rewind, assist_active, || phoming.manual_home(&toolhead, vec![endstop], &pos, speed, triggered, check_trigger));
     match homed {
         Ok(()) => {
             let end_ts = reactor.monotonic();

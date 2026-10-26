@@ -5,7 +5,7 @@ use kaliru::configfile::ConfigWrapper;
 use kaliru::error::KResult;
 
 /// The AFC modules the native AFC replaces (klippy/extras names)
-pub const NATIVE_MODULES: [&str; 21] = [
+pub const NATIVE_MODULES: [&str; 24] = [
     "AFC",
     "AFC_functions",
     "AFC_spool",
@@ -22,6 +22,9 @@ pub const NATIVE_MODULES: [&str; 21] = [
     "AFC_NightOwl",
     "AFC_QuattroBox",
     "AFC_EMU",
+    "AFC_vivid",
+    "AFC_Claymore",
+    "AFC_HTLF",
     "AFC_led",
     "AFC_buffer",
     "AFC_button",
@@ -76,6 +79,17 @@ pub fn native_scope(config: &ConfigWrapper) -> KResult<Result<(), String>> {
                 }
             }
             "AFC_lane" => {
+                // a lane of a ViViD / Claymore / HTLF (driven by the unit's steppers)
+                let selector_unit = opt(s, "unit").is_some_and(|u| {
+                    let unit = u.split(':').next().unwrap_or("").trim().to_string();
+                    ["AFC_vivid", "AFC_Claymore", "AFC_HTLF"].iter().any(|t| sections.iter().any(|x| *x == format!("{} {}", t, unit)))
+                });
+                if selector_unit {
+                    if opt(s, "step_pin").is_some() {
+                        return Ok(Err(format!("[{}] step_pin", s)));
+                    }
+                    continue;
+                }
                 // an ACE lane: one AFC_ACE builds, or the override of one
                 // (no unit line); lanes of other units stay python
                 match opt(s, "unit") {

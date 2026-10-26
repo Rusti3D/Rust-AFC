@@ -26,6 +26,11 @@ pub enum Family {
     NightOwl,
     QuattroBox,
     Emu,
+    /// AFC_vivid, AFC_Claymore: selector units (vivid.rs)
+    Vivid,
+    Claymore,
+    /// AFC_HTLF: a selector unit with a lobed cam (htlf.rs)
+    Htlf,
 }
 
 /// A python number in a message: an int stays "0", a float is "0.0"
@@ -73,12 +78,37 @@ impl Num {
 }
 
 fn make(config: &ConfigWrapper, family: Family) -> KResult<PObj> {
+    Ok(make_unit(config, family)?)
+}
+
+pub fn load_config_prefix_vivid(config: &ConfigWrapper) -> KResult<PObj> {
+    let unit = make_unit(config, Family::Vivid)?;
+    super::vivid::init(&unit, config)?;
+    Ok(unit)
+}
+
+pub fn load_config_prefix_htlf(config: &ConfigWrapper) -> KResult<PObj> {
+    let unit = make_unit(config, Family::Htlf)?;
+    super::htlf::init(&unit, config)?;
+    Ok(unit)
+}
+
+pub fn load_config_prefix_claymore(config: &ConfigWrapper) -> KResult<PObj> {
+    let unit = make_unit(config, Family::Claymore)?;
+    super::vivid::init(&unit, config)?;
+    Ok(unit)
+}
+
+fn make_unit(config: &ConfigWrapper, family: Family) -> KResult<Rc<AfcUnit>> {
     let unit = AfcUnit::new(config, |config, _settings: &UnitSettings| {
         let default_type = match family {
             Family::BoxTurtle => "Box_Turtle",
             Family::NightOwl => "Night_Owl",
             Family::QuattroBox => "Quattro_Box",
             Family::Emu => "EMU",
+            Family::Vivid => "ViViD",
+            Family::Claymore => "Claymore",
+            Family::Htlf => "HTLF",
         };
         let type_name = config.get("type", default_type)?;
         Ok((UnitKind::BoxTurtle(family), type_name))
@@ -109,7 +139,7 @@ fn emu_virtual_hub(unit: &AfcUnit, lane: &AfcLane) -> bool {
 
 /// move_to_hub: to the hub switch (an EMU with a virtual hub: the load switch)
 pub fn unit_move_to_hub(unit: &AfcUnit, lane: &Rc<AfcLane>, dist: f64, dir: MoveDirection, use_homing: bool, speed_mode: SpeedMode, assist_active: AssistActive) -> KResult<(bool, f64, MoveWarning)> {
-    let endstop = if emu_virtual_hub(unit, lane) { lane.load_es() } else { lane.hub_endstop_name() };
+    let endstop = if emu_virtual_hub(unit, lane) || matches!(unit.kind, UnitKind::BoxTurtle(Family::Vivid)) { lane.load_es() } else { lane.hub_endstop_name() };
     lane.move_to(dist * dir.value(), speed_mode, &endstop, assist_active, use_homing)
 }
 
@@ -145,6 +175,8 @@ pub fn unit_handle_connect(unit: &AfcUnit, family: Family) {
         }
         Family::QuattroBox => ("<span class=success--text>Quattro Box Ready</span>".to_string(), "<span class=error--text>Quattro Box Not Ready</span>\n".to_string()),
         Family::Emu => ("<span class=success--text>EMU Ready\n</span>".to_string(), "<span class=error--text>EMU Not Ready</span>\n".to_string()),
+        Family::Vivid | Family::Claymore => super::vivid::logos(unit),
+        Family::Htlf => super::htlf::logos(),
     };
     *unit.logo.borrow_mut() = logo;
     *unit.logo_error.borrow_mut() = logo_error;
@@ -152,6 +184,9 @@ pub fn unit_handle_connect(unit: &AfcUnit, family: Family) {
 
 /// _move_lane: forward then back by 5 mm; the lane's load state
 fn move_lane(unit: &AfcUnit, lane: &Rc<AfcLane>, delay: f64, enable_movement: bool) -> KResult<bool> {
+    if super::vivid::is_selector_unit(unit) {
+        return super::vivid::move_lane(unit, lane);
+    }
     let afc = &unit.afc;
     if enable_movement {
         lane.move_lane(5.0, afc.short_moves_speed, afc.short_moves_accel, true)?;
@@ -168,6 +203,13 @@ pub fn unit_system_test(unit: &AfcUnit, cur_lane: &Rc<AfcLane>, delay: f64, assi
     let mut msg = String::new();
     let mut succeeded = true;
 
+    // ViViD, Claymore: no movement (Claymore takes the load sensor as prep)
+    let enable_movement = if super::vivid::is_selector_unit(unit) {
+        super::vivid::system_test_prepare(unit, cur_lane);
+        false
+    } else {
+        enable_movement
+    };
     // Run test reverse/forward on each lane
     cur_lane.unsync_to_extruder(false)?;
     let loaded = move_lane(unit, cur_lane, delay, enable_movement)?;

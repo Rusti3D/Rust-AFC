@@ -1,0 +1,25 @@
+# fake_moonraker
+# A ViViD (configs/vivid_flow.cfg: sensors following the homing moves): a
+# spool into lane1 is selected (the cam homes to lane1's selector switch,
+# turning back) and homed to its load switch through the drive stepper,
+# then backed off it; then a tool load (the hub move homes to the load
+# switch), the unload and an eject
+CONFIG ../configs/vivid_flow.cfg
+DICTIONARY atmega2560.dict Turtle_1=stm32h723.dict
+
+G4 P1000
+SET_KINEMATIC_POSITION X=100 Y=100 Z=10
+WAIT 6
+TEST_BUTTON PIN=^!Turtle_1:TRG1 STATE=1
+WAIT 6
+TEST_BUTTON PIN=^Turtle_1:EXT1 STATE=0
+WAIT 1
+T0
+WAIT 3
+TEST_BUTTON PIN=^PK1 STATE=0
+WAIT 2
+TOOL_UNLOAD LANE=lane1
+WAIT 3
+LANE_UNLOAD LANE=lane1
+WAIT 3
+AFC_STATUS

@@ -17,7 +17,9 @@ const MODULES: &[PrinterModule] = &[
     module("AFC", Some(afc::load_config), None),
     module("AFC_ACE", Some(afc::ace::load_config), Some(afc::ace::load_config_prefix)),
     module("AFC_EMU", None, Some(afc::boxturtle::load_config_prefix_emu)),
+    module("AFC_HTLF", None, Some(afc::boxturtle::load_config_prefix_htlf)),
     module("AFC_BoxTurtle", None, Some(afc::boxturtle::load_config_prefix)),
+    module("AFC_Claymore", None, Some(afc::boxturtle::load_config_prefix_claymore)),
     module("AFC_buffer", None, Some(afc::buffer::load_config_prefix)),
     module("AFC_button", None, Some(afc::button::load_config_prefix)),
     module("AFC_NightOwl", None, Some(afc::boxturtle::load_config_prefix_night_owl)),
@@ -35,6 +37,7 @@ const MODULES: &[PrinterModule] = &[
     module("AFC_prep", Some(afc::prep::load_config), None),
     module("AFC_spool", Some(afc::spool::load_config), None),
     module("AFC_stepper", None, Some(afc::stepper::load_config_prefix)),
+    module("AFC_vivid", None, Some(afc::boxturtle::load_config_prefix_vivid)),
 ];
 
 /// whether the native AFC runs this config (else the python AFC does)

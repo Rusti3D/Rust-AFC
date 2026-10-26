@@ -1,0 +1,19 @@
+# fake_moonraker
+# A ViViD (configs/vivid.cfg: drive and selector steppers, AFC_lane lanes):
+# PREP, selecting lanes with the cam (AFC_SELECT_LANE homes the selector
+# stepper to the lane's selector switch), unselecting, lane moves through
+# the drive stepper, a calibration (ejects the lane, clears the flag)
+CONFIG ../configs/vivid.cfg
+DICTIONARY atmega2560.dict Turtle_1=stm32h723.dict
+
+G4 P1000
+PREP
+AFC_STATUS
+AFC_SELECT_LANE LANE=lane2
+AFC_UNSELECT_LANE UNIT=ViViD_1 FORCE=1 MOVE_DIST=30
+AFC_UNSELECT_LANE UNIT=ViViD_1
+LANE_MOVE LANE=lane1 DISTANCE=50
+LANE_MOVE LANE=lane3 DISTANCE=-20
+SET_LANE_LOADED LANE=lane4
+LANE_UNLOAD LANE=lane4
+AFC_STATUS

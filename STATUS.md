@@ -1,4 +1,4 @@
-# Rust-AFC status — 2026-10-26
+# Rust-AFC status — 2026-10-26 (later)
 ## Goal
 AFC (Armored Turtle's Automated Filament Control, the version COSMOS ships, 1.2.7) as a native, built-in
 kaliru plugin: a crate a distro compiles into its kaliru binary, enabled by the user's `[AFC...]` config
@@ -10,7 +10,10 @@ Python AFC on kaliru's plugin layer stays the fallback until the port is complet
   BoxTurtle setup (tests/configs/cosmos/boxturtle.cfg: AFC_stepper lanes, AFC_BoxTurtle (+ NightOwl,
   QuattroBox), espoolers (src/afc/assist.rs), AFC_led (src/afc/led.rs), switched AFC_buffer
   (src/afc/buffer.rs)). Proven native: bt_toolchange runs with libpython unavailable.
-- Parity: `tools/afc_cmp.sh` 14/14 identical, three runs; clippy 0 (Rust-AFC and kaliru).
+- Since then: M2 (AFC_button, AFC_form_tip, AFC_poop) and from M3 EMU, ViViD, Claymore, HTLF (src/afc/
+  vivid.rs, htlf.rs: AFC_lane lanes on the unit's drive stepper, the cam on the selector stepper; a drive
+  stepper's homing runs the lane's assist, as python swaps assist_move).
+- Parity: `tools/afc_cmp.sh` 24/24 identical, three runs; clippy 0 (Rust-AFC and kaliru).
   BoxTurtle cases: bt_basic / bt_toolchange (complete config), btnobuf_toolchange (no buffer: espoolers,
   LEDs), btmin_* (no LEDs, buffer or espoolers: commands, moves, insert, tool load, unload).
 - Harness: TEST_BUTTON injects the MCU's buttons_state (test plugin, both sides); `follow_homing` flips the
@@ -21,19 +24,20 @@ Python AFC on kaliru's plugin layer stays the fallback until the port is complet
   mutex; buttons registered after the espooler's pins (MCU oid order); Python int defaults kept
   (empty_spool_weight, full_weight, spool_ratio, timer_delay, delta_movement, assist_max_motor_rpm);
   gcode_get_value returns the default unchanged when the parameter is absent.
-- kaliru (uncommitted, gate running): buttons groups API (mcu_button_groups / pin_names / state /
-  handle_buttons_state), Endstop::mcu_pin, LEDHelper set_color / check_transmit / led_count public
-  (python indexing), configfile deprecate message "Value '...'" (was "PyVal '...'").
+- kaliru 702ecb0 (pushed, rustify gate matches): buttons groups API, Endstop::mcu_pin, LEDHelper
+  set_color / check_transmit / led_count public, configfile deprecate message "Value '...'".
+- EMU, ViViD, Claymore, HTLF configs are made for the tests (tests/configs/*_unit.cfg: none ships with
+  COSMOS); their lanes are calibrated (a first ViViD load rewrites config files).
 
 ## Queue
-- [ ] Push kaliru (after rustify_gate matches), bump Rust-AFC's kaliru rev, commit + push Rust-AFC.
-- [ ] Rusticc: next image picks up Rust-AFC M1 (user decides when).
-- [ ] M2 the rest of the accessories: AFC_button, form_tip, poop.
-- [ ] M3 HTLF, Claymore, EMU, ViViD, Toolchanger.
-- [ ] M4 OpenAMS / OAMS; FPS_PSF buffer.
+- [ ] Rusticc: next image picks up Rust-AFC (user decides when).
+- [ ] M3 Toolchanger (AFC_Toolchanger + AFC_extruder's toolchanger / LED options, klipper-toolchanger).
+- [ ] M4 OpenAMS / OAMS; FPS_PSF buffer; Snapmaker U1 options.
 
 ## Next
-1. M2: read AFC_button.py, AFC_form_tip.py, AFC_poop.py; port each; widen scope.rs; cases on boxturtle.cfg.
+1. Toolchanger: AFC_extruder toolchanger_unit makes the extruder a standalone lane (tc_lane) with its own
+   kinematics/trapq; tool LEDs (led_name, status_led_idx, nozzle_led_idx); SELECT_TOOL / UNSELECT_TOOL
+   (klipper-toolchanger; in tests a gcode_macro); multi-extruder test printer.
 
 ## Verify
 `bash tools/afc_cmp.sh` (WSL, ~10 min for 14 cases); cargo clippy --release with CARGO_TARGET_DIR=~/rk/target-rafc
@@ -51,8 +55,9 @@ under the shared lock /tmp/rustify_gates.lock.
   fila_tool_end (None without pin_tool_end): logged, no pause. The shipped configs use a virtual hub.
 - ACE 2, units: auto on a RESTART may count 0 while the old bus still holds the cable (exclusive open).
 - Batch mode: after any extruder move idle_timeout stays "Printing" (no MCU clock), so a spool insert after a
-  tool load is refused ("actively moving"); the toolhead retract polls its sensor between plain moves, so
-  cases clear it by TEST_BUTTON first.
+  tool load is refused ("actively moving") and so are buttons; the toolhead retract polls its sensor between
+  plain moves, so cases clear it by TEST_BUTTON first; homing always runs its full distance (HTLF's cam
+  then "fails to home" on its first step, both sides alike).
 
 ## Traps
 - No motion on the user's CC1 without the user present; coordinate with the Moonruster session.

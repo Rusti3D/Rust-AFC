@@ -104,6 +104,8 @@ pub struct AfcUnit {
     extruder: Option<String>,
     buffer_name: Option<String>,
     pub buffer_obj: RefCell<Option<Rc<super::buffer::AfcBuffer>>>,
+    /// a ViViD's / Claymore's drive and selector steppers
+    pub selector: RefCell<Option<Rc<super::vivid::Selector>>>,
     pub remember_spool: bool,
     pub settings: UnitSettings,
     pub unload_on_runout: bool,
@@ -222,7 +224,7 @@ impl AfcUnit {
             full_name,
             name,
             lanes: RefCell::new(IndexMap::default()),
-            eject_to_calibrate: false,
+            eject_to_calibrate: matches!(kind, UnitKind::BoxTurtle(super::boxturtle::Family::Vivid | super::boxturtle::Family::Claymore)),
             hub_obj: RefCell::new(None),
             extruder_obj: RefCell::new(None),
             stepperless_drive: Cell::new(false),
@@ -230,6 +232,7 @@ impl AfcUnit {
             extruder,
             buffer_name,
             buffer_obj: RefCell::new(None),
+            selector: RefCell::new(None),
             remember_spool,
             settings,
             unload_on_runout,
@@ -792,17 +795,28 @@ impl AfcUnit {
     }
 
     /// select_lane: (homed, distance); units without a selector: (True, 0.0)
-    pub fn select_lane(&self, _lane: &Rc<AfcLane>, _sel_prep: bool) -> KResult<(bool, f64)> {
+    pub fn select_lane(&self, lane: &Rc<AfcLane>, sel_prep: bool) -> KResult<(bool, f64)> {
+        if super::vivid::is_selector_unit(self) {
+            return super::vivid::select_lane(self, lane, sel_prep);
+        }
+        if super::htlf::is_htlf(self) {
+            // (python's second argument is HTLF's disable_selector)
+            return super::htlf::select_lane(self, lane, sel_prep);
+        }
         Ok((true, 0.0))
     }
 
-    pub fn return_to_home(&self, _prep: bool) -> KResult<()> {
+    pub fn return_to_home(&self, prep: bool) -> KResult<()> {
+        if super::htlf::is_htlf(self) {
+            super::htlf::return_to_home(self, prep, true)?;
+        }
         Ok(())
     }
 
     pub fn check_runout(&self, lane: &Rc<AfcLane>) -> KResult<bool> {
         match &self.kind {
             UnitKind::Ace(_) => super::ace::check_runout(self, lane),
+            UnitKind::BoxTurtle(super::boxturtle::Family::Htlf) => super::htlf::check_runout(self, lane),
             UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) => Ok(false),
         }
     }
@@ -811,6 +825,7 @@ impl AfcUnit {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_system_test(self, cur_lane, delay, assign_tcmd, enable_movement),
             UnitKind::Ace(_) => super::ace::system_test(self, cur_lane, assign_tcmd),
+            UnitKind::BoxTurtle(super::boxturtle::Family::Htlf) => super::htlf::system_test(self, cur_lane, delay, assign_tcmd, enable_movement),
             UnitKind::BoxTurtle(_) => super::boxturtle::unit_system_test(self, cur_lane, delay, assign_tcmd, enable_movement),
         }
     }
@@ -841,12 +856,16 @@ impl AfcUnit {
         match &self.kind {
             UnitKind::Canvas(_) => Ok((false, super::canvas::CALIBRATION_UNSUPPORTED.into(), 0.0)),
             UnitKind::Ace(_) => Ok((true, "calibration_lane".into(), 0.0)),
-            UnitKind::BoxTurtle(_) => super::boxturtle::unit_calibrate_lane(self, lane, tol),
+            UnitKind::BoxTurtle(_) => match super::vivid::calibrate_lane(self, lane)? {
+                Some(r) => Ok(r),
+                None => super::boxturtle::unit_calibrate_lane(self, lane, tol),
+            },
         }
     }
 
     pub fn calibration_lane_message(&self) -> String {
         match &self.kind {
+            UnitKind::BoxTurtle(_) if super::vivid::is_selector_unit(self) => super::vivid::calibration_lane_message(self),
             UnitKind::Canvas(_) | UnitKind::BoxTurtle(_) => String::new(),
             UnitKind::Ace(_) => super::ace::CALIBRATION_LANE_MESSAGE.into(),
         }
@@ -883,7 +902,7 @@ impl AfcUnit {
 
     pub fn get_calibrated_lanes(&self) -> Option<Vec<String>> {
         if self.eject_to_calibrate {
-            return Some(self.lanes.borrow().values().filter(|l| l.load_state() && l.calibrated_lane && !l.tool_loaded.get()).map(|l| l.name.clone()).collect());
+            return Some(self.lanes.borrow().values().filter(|l| l.load_state() && l.calibrated_lane.get() && !l.tool_loaded.get()).map(|l| l.name.clone()).collect());
         }
         None
     }
@@ -938,6 +957,9 @@ impl AfcUnit {
             UnitKind::Canvas(_) => super::canvas::unit_prep_load(self, lane),
             // ACE firmware stages filament at the slot on insert
             UnitKind::Ace(_) => Ok(()),
+            UnitKind::BoxTurtle(_) if super::vivid::is_selector_unit(self) => super::vivid::prep_load(self, lane),
+            // (HTLF has no prep switches)
+            UnitKind::BoxTurtle(super::boxturtle::Family::Htlf) => Ok(()),
             UnitKind::BoxTurtle(_) => super::boxturtle::unit_prep_load(self, lane),
         }
     }
@@ -946,6 +968,8 @@ impl AfcUnit {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_prep_post_load(self, lane),
             UnitKind::Ace(_) => Ok(()),
+            // (ViViD, Claymore: nothing)
+            UnitKind::BoxTurtle(_) if super::vivid::is_selector_unit(self) || super::htlf::is_htlf(self) => Ok(()),
             UnitKind::BoxTurtle(_) => super::boxturtle::unit_prep_post_load(self, lane),
         }
     }
@@ -954,7 +978,12 @@ impl AfcUnit {
         match &self.kind {
             UnitKind::Canvas(_) => super::canvas::unit_eject_lane(self, lane),
             UnitKind::Ace(_) => super::ace::eject_lane(self, lane),
-            UnitKind::BoxTurtle(_) => super::boxturtle::unit_eject_lane(self, lane),
+            UnitKind::BoxTurtle(_) => {
+                if super::vivid::eject_lane(self, lane)? {
+                    return Ok(());
+                }
+                super::boxturtle::unit_eject_lane(self, lane)
+            }
         }
     }
 

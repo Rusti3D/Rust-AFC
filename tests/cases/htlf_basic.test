@@ -1,0 +1,16 @@
+# fake_moonraker
+# An HTLF (configs/htlf.cfg: drive and selector steppers, a lobed cam homed to
+# its home switch, AFC_lane lanes): PREP (each lane's test homes the cam
+# first and after), AFC_HOME_UNIT, lane moves through the drive stepper
+# (each selecting its lane: home the cam, turn it to the lane's lobe)
+CONFIG ../configs/htlf.cfg
+DICTIONARY atmega2560.dict Turtle_1=stm32h723.dict
+
+G4 P1000
+PREP
+AFC_STATUS
+AFC_HOME_UNIT UNIT=HTLF_1
+LANE_MOVE LANE=lane3 DISTANCE=50
+LANE_MOVE LANE=lane1 DISTANCE=-20
+LANE_MOVE LANE=lane1 DISTANCE=20
+AFC_STATUS

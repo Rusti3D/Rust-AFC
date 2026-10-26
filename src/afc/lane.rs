@@ -261,7 +261,7 @@ pub struct AfcLane {
     pub enable_sensors_in_gui: bool,
     debounce_delay: f64,
     pub td1_device_id: RefCell<Option<String>>,
-    pub calibrated_lane: bool,
+    pub calibrated_lane: Cell<bool>,
     pub only_lane: Cell<bool>,
 
     pub prep: Option<String>,
@@ -269,8 +269,11 @@ pub struct AfcLane {
     pub load: Option<String>,
     pub load_state_raw: Cell<bool>,
     pub selector: Option<String>,
-    selector_state: Cell<Option<bool>>,
+    pub selector_state: Cell<Option<bool>>,
     pub selector_cal_dis: f64,
+    pub fila_selector: RefCell<Option<Rc<kaliru::extras::filament_switch_sensor::SwitchSensor>>>,
+    /// the unit's drive stepper (an AFC_lane of a ViViD / Claymore)
+    pub drive_stepper: RefCell<Option<Rc<AfcLane>>>,
 
     pub espooler: Rc<Espooler>,
     lane_load_count: RefCell<Option<Rc<StatVar>>>,
@@ -380,6 +383,7 @@ impl AfcLane {
         let prep = config.get_opt("prep")?;
         let load = config.get_opt("load")?;
         let selector = config.get_opt("selector")?;
+        let selector_cal_dis = config.getfloat("selector_cal_distance", 0.0, Lim::new())?;
         // lane triggers: registered before the espooler sets up its motor
         // pins, as python does (the first button on an mcu takes its oid);
         // the callbacks reach the lane once it exists
@@ -470,7 +474,7 @@ impl AfcLane {
                 enable_sensors_in_gui,
                 debounce_delay,
                 td1_device_id: RefCell::new(td1_device_id),
-                calibrated_lane,
+                calibrated_lane: Cell::new(calibrated_lane),
                 only_lane: Cell::new(false),
                 prep: prep.clone(),
                 prep_state: Cell::new(false),
@@ -478,7 +482,9 @@ impl AfcLane {
                 load_state_raw: Cell::new(load.is_none()),
                 selector: selector.clone(),
                 selector_state: Cell::new(None),
-                selector_cal_dis: 0.0,
+                selector_cal_dis,
+                fila_selector: RefCell::new(None),
+                drive_stepper: RefCell::new(None),
                 espooler,
                 lane_load_count: RefCell::new(None),
                 filament_diameter: RefCell::new(PyVal::Float(filament_diameter)),
@@ -551,9 +557,21 @@ impl AfcLane {
             *lane.load_debounce_button.borrow_mut() = Some(button);
             lane.set_homing_endstop(&query_endstops, &ppins, p, HOMING_LOAD)?;
         }
-        if selector.is_some() {
-            // (no selector units in the native scope)
-            return Err(KError::config("AFC: lane selectors are not native"));
+        if let Some(p) = &selector {
+            let show = enable_sensors_in_gui && sensor_to_show.as_deref().is_none_or(|s| s.contains("selector"));
+            let (fila, _) = add_filament_switch(&format!("{}_selector", name), p, &printer, &SwitchOptions { show_sensor: show, ..Default::default() })?;
+            *lane.fila_selector.borrow_mut() = Some(fila);
+            lane.set_homing_endstop(&query_endstops, &ppins, p, HOMING_SELECTOR)?;
+            let l = Rc::downgrade(&lane);
+            buttons.register_buttons(
+                &[p.as_str()],
+                Rc::new(move |_et, state| {
+                    if let Some(l) = l.upgrade() {
+                        l.selector_state.set(Some(state != 0));
+                    }
+                    Ok(())
+                }),
+            )?;
         }
         if let Some(h) = hub.as_deref().filter(|h| !h.contains("direct")) {
             lane.get_hub_object(h)?;
@@ -608,8 +626,30 @@ impl AfcLane {
         }
         // Should only get this far for AFC_lane configs
         lane.get_steppers(config)?;
+        super::vivid::register_select_lane(&lane)?;
         let _ = canvas;
         Ok(lane)
+    }
+
+    pub fn me_weak(&self) -> Weak<AfcLane> {
+        self.me.clone()
+    }
+
+    /// the unit's drive stepper, for a lane without its own
+    fn drive(&self) -> Option<Rc<AfcLane>> {
+        self.drive_stepper.borrow().clone()
+    }
+
+    pub fn selector_endstop_name(&self) -> Endstop {
+        self.lookup_endstop(HOMING_SELECTOR)
+    }
+
+    pub fn load_endstop_name(&self) -> Endstop {
+        self.lookup_endstop(HOMING_LOAD)
+    }
+
+    pub fn lookup_endstop_pub(&self, name: &str) -> Endstop {
+        self.lookup_endstop(name)
     }
 
     pub fn rc(&self) -> Rc<AfcLane> {
@@ -1088,17 +1128,32 @@ impl AfcLane {
             if unit.stepperless_drive.get() {
                 return Ok(());
             }
+            let mut drive = None;
             if config.get_opt("step_pin")?.is_none_or(|s| s.is_empty()) {
                 self.only_lane.set(true);
-                // (no unit in the native scope has a drive stepper)
+                drive = unit.selector.borrow().as_ref().map(|s| s.drive_stepper_obj.clone());
+                *self.drive_stepper.borrow_mut() = drive.clone();
             } else {
                 // drive_stepper is the lane itself (AFC_stepper)
-                return super::stepper::add_lane_endstops(self);
+                super::stepper::add_lane_endstops(self)?;
             }
-            // drive_stepper is the lane itself: its endstops go on its
-            // extruder_stepper, which a lane without a stepper does not have
-            if !self.endstops.borrow().values().all(|es| es.endstop_name.contains(HOMING_SELECTOR)) {
-                return Err(no_attr("NoneType", "stepper"));
+            match &drive {
+                Some(d) => super::stepper::add_endstops_to_drive(d, self)?,
+                // drive_stepper is the lane itself: its endstops go on its
+                // extruder_stepper, which a lane without a stepper does not have
+                None if self.stepper.borrow().is_none() && !self.endstops.borrow().values().all(|es| es.endstop_name.contains(HOMING_SELECTOR)) => {
+                    return Err(no_attr("NoneType", "stepper"));
+                }
+                None => {}
+            }
+            if EXCLUDE_TYPES.contains(&unit.type_name().as_str()) && self.fullname.contains("AFC_lane") {
+                let sel = unit.selector.borrow().clone();
+                *self.drive_stepper.borrow_mut() = sel.as_ref().map(|s| s.drive_stepper_obj.clone());
+                if self.selector.is_some() {
+                    if let Some(s) = sel {
+                        super::stepper::add_selector_endstop(&s.selector_stepper_obj, self)?;
+                    }
+                }
             }
             Ok(())
         })();
@@ -1216,7 +1271,11 @@ impl AfcLane {
             return super::canvas::lane_move(self, distance, speed, accel, true);
         }
         self.unit_obj()?.select_lane(&self.rc(), false)?;
-        self.assist_move(speed, distance < 0.0, assist_active, || Ok(()))
+        let drive = self.drive_stepper.borrow().clone();
+        self.assist_move(speed, distance < 0.0, assist_active, || match drive {
+            Some(d) => d.move_lane(distance, speed, accel, assist_active),
+            None => Ok(()),
+        })
     }
 
     /// move_to: homing to an endstop, or a plain move
@@ -1224,14 +1283,19 @@ impl AfcLane {
         if self.canvas.borrow().is_some() {
             return super::canvas::lane_move_to(self, distance, speed_mode, endstop, use_homing);
         }
-        if self.stepper.borrow().is_some() {
+        let drive = self.drive_stepper.borrow().clone();
+        if self.stepper.borrow().is_some() || drive.is_some() {
             if use_homing {
                 // Add extra distance to homing move to guarantee that endstop is hit
                 let overshoot = self.settings().homing_overshoot.unwrap_or(0.0);
                 let new_distance = if distance < 0.0 { distance - overshoot } else { distance + overshoot };
                 self.unit_obj()?.select_lane(&self.rc(), false)?;
                 let (speed, accel) = self.get_speed_accel_pv(speed_mode);
-                let (homed, mov_dis, error) = super::stepper::home_to(&self.rc(), endstop, new_distance, &speed, &accel, distance > 0.0, true, self.get_active_assist(distance, assist_active))?;
+                let assist = self.get_active_assist(distance, assist_active);
+                let (homed, mov_dis, error) = match &drive {
+                    Some(d) => super::stepper::home_to_for(d, self, endstop, new_distance, &speed, &accel, distance > 0.0, true, assist)?,
+                    None => super::stepper::home_to(&self.rc(), endstop, new_distance, &speed, &accel, distance > 0.0, true, assist)?,
+                };
                 let warn = if error {
                     MoveWarning::Error
                 } else if (distance.abs() - mov_dis) > self.settings().homing_delta.unwrap_or(0.0) {
@@ -1577,6 +1641,9 @@ impl AfcLane {
         if self.stepper.borrow().is_some() {
             return super::stepper::lane_do_enable(self, enable);
         }
+        if let Some(d) = self.drive() {
+            return d.do_enable(enable);
+        }
         if self.canvas.borrow().is_some() {
             return super::canvas::lane_do_enable(self, enable);
         }
@@ -1588,12 +1655,19 @@ impl AfcLane {
             let th = self.extruder_obj()?.th_extruder_name.clone();
             return super::stepper::lane_sync_to_extruder(self, update_current, Some(&th));
         }
+        if let Some(d) = self.drive() {
+            let th = self.extruder_obj()?.th_extruder_name.clone();
+            return super::stepper::lane_sync_to_extruder(&d, update_current, Some(&th));
+        }
         Ok(())
     }
 
     pub fn unsync_to_extruder(&self, update_current: bool) -> KResult<()> {
         if self.stepper.borrow().is_some() {
             return super::stepper::lane_unsync_to_extruder(self, update_current);
+        }
+        if let Some(d) = self.drive() {
+            return d.unsync_to_extruder(update_current);
         }
         Ok(())
     }
@@ -1602,6 +1676,9 @@ impl AfcLane {
         if self.stepper.borrow().is_some() {
             return super::stepper::set_load_current(self);
         }
+        if let Some(d) = self.drive() {
+            return d.set_load_current();
+        }
         Ok(())
     }
 
@@ -1609,12 +1686,18 @@ impl AfcLane {
         if self.stepper.borrow().is_some() {
             return super::stepper::set_print_current(self);
         }
+        if let Some(d) = self.drive() {
+            return d.set_print_current();
+        }
         Ok(())
     }
 
     pub fn update_rotation_distance(&self, multiplier: f64) -> KResult<()> {
         if self.stepper.borrow().is_some() {
             return super::stepper::update_rotation_distance(self, multiplier);
+        }
+        if let Some(d) = self.drive() {
+            return d.update_rotation_distance(multiplier);
         }
         Ok(())
     }

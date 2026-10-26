@@ -16,6 +16,7 @@ pub mod error;
 pub mod extruder;
 pub mod form_tip;
 pub mod functions;
+pub mod htlf;
 pub mod hub;
 pub mod lane;
 pub mod led;
@@ -30,6 +31,7 @@ pub mod stats;
 pub mod toolchange;
 pub mod unit;
 pub mod utils;
+pub mod vivid;
 
 use kaliru::configfile::{ConfigWrapper, Lim};
 use kaliru::error::{KError, KResult};
