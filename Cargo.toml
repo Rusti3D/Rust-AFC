@@ -1,6 +1,6 @@
 [package]
 name = "rust-afc"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "AFC (Armored Turtle's Automated Filament Control) as a native kaliru plugin"
 license = "GPL-3.0-only"
@@ -17,7 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 # a kaliru commit with the native plugin API (docs/PLUGINS.md "Native plugins")
-kaliru = { git = "https://github.com/Rusti3D/kaliru", rev = "0f44291e5283780cca7baad790c262ac2a69de81" }
+kaliru = { git = "https://github.com/Rusti3D/kaliru", rev = "bbb8f0c705e8998cbe095cf212a853785c5d994b" }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 libc = "0.2"
 
