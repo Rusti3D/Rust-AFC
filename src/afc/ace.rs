@@ -30,6 +30,13 @@ const DEFAULT_BOWDEN_MM: f64 = 500.0;
 const DRYER_MAX_C: i64 = 65;
 const SPIN_UP_S: f64 = 0.6;
 const RPC_REPLY_S: f64 = 5.0;
+// How long a lost reply waits for the ACE to come back on USB before its
+// motion state counts as unknown: a re-enumeration is ~0.5s, each reconnect
+// attempt ~0.7s.
+const RECONNECT_WAIT_S: f64 = 4.0;
+// Longest the driver waits for the ACE's own insert preload to finish (an
+// ACE 2's runs up to 15 s)
+const PRELOAD_WAIT_S: f64 = 60.0;
 // [AFC_ACE] ace: -> unit protocol
 const ACE_MODELS: [(&str, &str); 2] = [("pro", "ace1"), ("2pro", "ace2")];
 
@@ -647,7 +654,16 @@ fn motion_rpc(unit: &AfcUnit, slot: i64, method: &str, p: Map<String, Value>, do
         return Ok(res);
     }
     unit.afc.logger.info(&AFC_ACE_AFCACE__MOTION_RPC, &format!("{} reply lost/garbled ({}); verifying via status", method, res.error_str()));
-    let Some(status) = get_status(unit, 0.0, 0.0, true)? else {
+    // A lost reply is usually the ACE dropping off USB: give it time to
+    // re-enumerate before reading its state. Fresh reads or nothing.
+    let reactor = &unit.afc.reactor;
+    let deadline = reactor.monotonic() + RECONNECT_WAIT_S;
+    let mut status = get_status(unit, 0.0, 0.0, true)?;
+    while status.is_none() && reactor.monotonic() < deadline {
+        reactor.pause(reactor.monotonic() + 0.2)?;
+        status = get_status(unit, 0.0, 0.0, true)?;
+    }
+    let Some(status) = status else {
         return Ok(RpcResult::err(format!("{} reply lost and motion state indeterminate", method)));
     };
     let done = match done_fn {
@@ -768,6 +784,28 @@ fn feed_until(unit: &AfcUnit, slot: i64, sensor_fn: Option<&SensorFn>, length: f
     }
     stop_motion(unit, slot, "stop_feed_filament")?;
     Ok((false, format!("sensor did not trigger within {:.0}mm (expected ~{:.0}mm) — check the filament path", fed, length)))
+}
+
+/// _home: a feed that homes on a path sensor. A slot sensor that drops out
+/// for a moment mid-feed makes the ACE start its own insert preload (seen on
+/// an ACE Pro: the slot reads "empty", then "preload"). The preload moves the
+/// filament and ignores stop, so the feed fails with the spool fine. Wait
+/// the preload out and home once more: the feed never assumes where the tip is.
+fn home(unit: &AfcUnit, slot: i64, feed: &dyn Fn() -> KResult<(bool, String)>) -> KResult<(bool, String)> {
+    let started = monotonic();
+    let (ok, msg) = feed()?;
+    let preloaded = match ace(unit).transport.borrow().as_ref() {
+        Some(t) => t.state().preloaded_since(slot, started),
+        None => false,
+    };
+    if ok || !preloaded {
+        return Ok((ok, msg));
+    }
+    unit.afc.logger.info(&AFC_ACE_AFCACE__HOME, &format!("{}: slot {} ran the ACE's own preload during the feed ({}); homing again", unit.name, slot + 1, msg));
+    if !wait_motion_idle(unit, slot, PRELOAD_WAIT_S, 0.0)? {
+        return Ok((false, format!("{}; the ACE's preload did not finish", msg)));
+    }
+    feed()
 }
 
 /// _approach_sensor: slowly for the last sensor_approach_mm before the gears
@@ -1629,7 +1667,7 @@ fn load_inner(unit: &AfcUnit, cur_lane: &Rc<AfcLane>, cur_extruder: &AfcExtruder
     let mut status = get_status(unit, 0.0, 0.0, false)?;
     if status.as_ref().is_some_and(|s| motion_active(slot, s)) {
         // The ACE's own insert preload: wait it out
-        wait_motion_idle(unit, slot, 60.0, 0.0)?;
+        wait_motion_idle(unit, slot, PRELOAD_WAIT_S, 0.0)?;
         status = get_status(unit, 0.0, 0.0, false)?;
     }
     let state = slot_info(slot, status.as_ref()).get("status").map(tp::py_str).unwrap_or_default().to_lowercase();
@@ -1649,7 +1687,7 @@ fn load_inner(unit: &AfcUnit, cur_lane: &Rc<AfcLane>, cur_extruder: &AfcExtruder
     if tail_in_bowden(unit, cur_lane) {
         // A spent spool's tail occupies sensor -> nozzle: push it through
         if kind == Some("hub") && !sensor_fn.as_ref().unwrap()()? {
-            let (ok, msg) = feed_until(unit, slot, sensor_fn.as_ref(), dist_hub + a.bowden_overshoot, a.feed_speed as f64, true)?;
+            let (ok, msg) = home(unit, slot, &|| feed_until(unit, slot, sensor_fn.as_ref(), dist_hub + a.bowden_overshoot, a.feed_speed as f64, true))?;
             if !ok {
                 afc.logger.error(c, &format!("ACE feed to hub sensor failed for {}: {}", cur_lane.name, msg));
                 return Ok(false);
@@ -1674,7 +1712,7 @@ fn load_inner(unit: &AfcUnit, cur_lane: &Rc<AfcLane>, cur_extruder: &AfcExtruder
     } else if kind == Some("hub") {
         let f = sensor_fn.as_ref().unwrap();
         if !f()? {
-            let (ok, msg) = feed_until(unit, slot, Some(f), dist_hub + a.bowden_overshoot, a.feed_speed as f64, true)?;
+            let (ok, msg) = home(unit, slot, &|| feed_until(unit, slot, Some(f), dist_hub + a.bowden_overshoot, a.feed_speed as f64, true))?;
             if !ok {
                 afc.logger.error(c, &format!("ACE feed to hub sensor failed for {}: {}", cur_lane.name, msg));
                 return Ok(false);
@@ -1689,7 +1727,7 @@ fn load_inner(unit: &AfcUnit, cur_lane: &Rc<AfcLane>, cur_extruder: &AfcExtruder
     } else if kind == Some("tool_start") {
         let f = sensor_fn.as_ref().unwrap();
         if !f()? {
-            let (ok, msg) = approach_sensor(unit, slot, f, a.hub_clear_mm + a.sensor_approach_mm, bowden + dist_hub)?;
+            let (ok, msg) = home(unit, slot, &|| approach_sensor(unit, slot, f, a.hub_clear_mm + a.sensor_approach_mm, bowden + dist_hub))?;
             if !ok {
                 afc.logger.error(c, &format!("ACE feed to tool_start sensor failed for {}: {}", cur_lane.name, msg));
                 return Ok(false);

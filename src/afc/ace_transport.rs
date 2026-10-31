@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 // ACE firmware states that mean "a motor is moving"
-pub const ACTIVE_STATES: [&str; 4] = ["busy", "feeding", "unwinding", "shifting"];
+pub const ACTIVE_STATES: [&str; 5] = ["busy", "feeding", "unwinding", "shifting", "preload"];
 pub const STOP_METHODS: [&str; 3] = ["stop_feed_filament", "stop_unwind_filament", "stop_feed_assist"];
 const STOP_REPLY_S: f64 = 1.0;
 const RPC_REPLY_S: f64 = 5.0;
@@ -167,11 +167,19 @@ pub struct TransportState {
     shutdown: AtomicBool,
     last_state: Mutex<Option<(Value, Value, Vec<Value>)>>,
     assist_pumping: AtomicBool,
+    // slot -> when status last showed it in the ACE's own insert preload
+    preload_at: Mutex<HashMap<i64, f64>>,
 }
 
 impl TransportState {
     pub fn cached_status(&self) -> (Option<Value>, f64) {
         self.status.lock().unwrap().clone()
+    }
+
+    /// preloaded_since: whether status showed the slot in the ACE's own
+    /// insert preload at or after `since` (monotonic)
+    pub fn preloaded_since(&self, slot: i64, since: f64) -> bool {
+        self.preload_at.lock().unwrap().get(&slot).is_some_and(|&t| t >= since)
     }
 
     pub fn drain_notes(&self) -> Vec<String> {
@@ -211,9 +219,13 @@ impl TransportState {
         let Some(Value::Object(payload)) = res.response.as_mut().and_then(|r| r.get_mut("result")) else { return };
         // The ACE Pro keeps a slot's last tag after the spool leaves; only
         // rfid 2 (identified) is live. ACE 2 slots carry no "rfid" key.
+        let now = monotonic();
         if let Some(Value::Array(slots)) = payload.get_mut("slots") {
-            for slot in slots.iter_mut() {
+            for (index, slot) in slots.iter_mut().enumerate() {
                 if let Value::Object(s) = slot {
+                    if s.get("status").and_then(|v| v.as_str()) == Some("preload") {
+                        self.preload_at.lock().unwrap().insert(index as i64, now);
+                    }
                     let rfid = s.get("rfid").map(|v| v.as_f64()).unwrap_or(Some(2.0));
                     if rfid != Some(2.0) {
                         s.insert("sku".into(), json!(""));
@@ -225,7 +237,7 @@ impl TransportState {
             }
         }
         let payload = Value::Object(payload.clone());
-        *self.status.lock().unwrap() = (Some(payload.clone()), monotonic());
+        *self.status.lock().unwrap() = (Some(payload.clone()), now);
         if let Err(e) = self.log_state_change(&payload) {
             kaliru::logging::debug(&format!("AFC_ACE: state log skipped: {}", e));
         }

@@ -77,7 +77,7 @@ except ImportError:
     serial = None
 
 # ACE firmware states that mean "a motor is moving"
-ACTIVE_STATES = frozenset(("busy", "feeding", "unwinding", "shifting"))
+ACTIVE_STATES = frozenset(("busy", "feeding", "unwinding", "shifting", "preload"))
 # The ACE sometimes eats the reply to a stop while its motor winds down (the
 # stop still lands). Those replies are short-waited: idle is then confirmed
 # from status, instead of stalling every sensor stop for the full read timeout.
@@ -100,6 +100,13 @@ SPIN_UP_S = 0.6
 # frame for ~3.5s, and pauses motion mid-feed if status isn't polled roughly
 # every second. One heartbeat interval serves both.
 HEARTBEAT_S = 0.8
+# How long a lost reply waits for the ACE to come back on USB before its
+# motion state counts as unknown: a re-enumeration is ~0.5s, each reconnect
+# attempt ~0.7s.
+RECONNECT_WAIT_S = 4.0
+# Longest the driver waits for the ACE's own insert preload to finish (an
+# ACE 2's runs up to 15 s)
+PRELOAD_WAIT_S = 60.0
 
 
 def _crc16_mcrf4xx(data: bytes) -> int:
@@ -177,6 +184,8 @@ class AceTransport(threading.Thread):
         self._status_time = 0.0
         self._last_state = None
         self._assist_pumping = False
+        # slot -> when status last showed it in the ACE's own insert preload
+        self._preload_at: Dict[int, float] = {}
         self._shutdown = threading.Event()
         # Seed request ids from the PID so a klippy restart can't match a
         # stale reply frame from the previous process.
@@ -212,6 +221,12 @@ class AceTransport(threading.Thread):
     def cached_status(self) -> Tuple[Optional[Dict[str, Any]], float]:
         with self._status_lock:
             return self._status, self._status_time
+
+    def preloaded_since(self, slot: int, since: float) -> bool:
+        """Whether status showed the slot in the ACE's own insert preload
+        at or after `since` (time.monotonic)."""
+        with self._status_lock:
+            return self._preload_at.get(slot, -1.0) >= since
 
     def drain_notes(self) -> list:
         """Take the messages this thread wanted logged (reactor side)."""
@@ -279,12 +294,15 @@ class AceTransport(threading.Thread):
                 # The ACE Pro keeps a slot's last tag after the spool leaves;
                 # only rfid 2 (identified, as SnapAce/U1-Ace read it) is live.
                 # ACE 2 slots carry no "rfid" key and are left alone.
-                for slot in payload.get("slots") or []:
+                now = time.monotonic()
+                for index, slot in enumerate(payload.get("slots") or []):
                     if isinstance(slot, dict) and slot.get("rfid", 2) != 2:
                         slot.update(sku="", type="", color=[0, 0, 0], colors=[[0, 0, 0, 0]])
+                    if isinstance(slot, dict) and slot.get("status") == "preload":
+                        self._preload_at[index] = now
                 with self._status_lock:
                     self._status = payload
-                    self._status_time = time.monotonic()
+                    self._status_time = now
                 try:
                     self._log_state_change(payload)
                 except (TypeError, ValueError, AttributeError) as exc:
@@ -1488,7 +1506,13 @@ class afcACE(afcUnit):
             return res  # never reached the ACE: nothing to verify
         self.logger.info(
             f"{method} reply lost/garbled ({res.get('error')}); verifying via status")
-        status = self._get_status(strict=True)  # fresh read or nothing
+        # A lost reply is usually the ACE dropping off USB: give it time to
+        # re-enumerate before reading its state. Fresh reads or nothing.
+        deadline = self.reactor.monotonic() + RECONNECT_WAIT_S
+        status = self._get_status(strict=True)
+        while status is None and self.reactor.monotonic() < deadline:
+            self.reactor.pause(self.reactor.monotonic() + 0.2)
+            status = self._get_status(strict=True)
         if status is None:
             # Motion state indeterminate: the command may be executing.
             # Resending non-idempotent motion here could double it — fail.
@@ -1607,6 +1631,23 @@ class afcACE(afcUnit):
         self._stop_motion(slot, "stop_feed_filament")
         return False, (f"sensor did not trigger within {fed:.0f}mm "
                        f"(expected ~{length:.0f}mm) — check the filament path")
+
+    def _home(self, slot: int, feed: Callable[[], Tuple[bool, str]]) -> Tuple[bool, str]:
+        """Run a feed that homes on a path sensor. A slot sensor that drops
+        out for a moment mid-feed makes the ACE start its own insert preload
+        (seen on an ACE Pro: the slot reads "empty", then "preload"). The
+        preload moves the filament and ignores stop, so the feed fails with
+        the spool fine. Wait the preload out and home once more: the feed
+        never assumes where the tip is."""
+        started = time.monotonic()
+        ok, msg = feed()
+        if ok or not self.transport.preloaded_since(slot, started):
+            return ok, msg
+        self.logger.info(f"{self.name}: slot {slot + 1} ran the ACE's own preload "
+                         f"during the feed ({msg}); homing again")
+        if not self._wait_motion_idle(slot, PRELOAD_WAIT_S, settle=0.0):
+            return False, f"{msg}; the ACE's preload did not finish"
+        return feed()
 
     def _approach_sensor(self, slot: int, sensor_fn: Callable[[], bool],
                          near: float, far: float) -> Tuple[bool, str]:
@@ -2413,7 +2454,7 @@ class afcACE(afcUnit):
         if status is not None and self._motion_active(slot, status):
             # The ACE's own insert preload: wait it out rather than fail the
             # load (an ACE 2's runs up to 15 s)
-            self._wait_motion_idle(slot, 60.0, settle=0.0)
+            self._wait_motion_idle(slot, PRELOAD_WAIT_S, settle=0.0)
             status = self._get_status()
         state = str(self._slot_info(slot, status).get("status", "")).lower()
         if state != "ready":
@@ -2438,8 +2479,8 @@ class afcACE(afcUnit):
             # new filament — its tip ends at the nozzle), purging over the
             # tray.
             if kind == "hub" and not sensor_fn():
-                ok, msg = self._feed_until(slot, sensor_fn, dist_hub + self.bowden_overshoot,
-                                           self.feed_speed)
+                ok, msg = self._home(slot, lambda: self._feed_until(
+                    slot, sensor_fn, dist_hub + self.bowden_overshoot, self.feed_speed))
                 if not ok:
                     self.logger.error(f"ACE feed to hub sensor failed for {cur_lane.name}: {msg}")
                     return False
@@ -2461,8 +2502,8 @@ class afcACE(afcUnit):
         elif kind == "hub":
             # Home on the frame sensor, then the blind push to the gears
             if not sensor_fn():
-                ok, msg = self._feed_until(slot, sensor_fn, dist_hub + self.bowden_overshoot,
-                                           self.feed_speed)
+                ok, msg = self._home(slot, lambda: self._feed_until(
+                    slot, sensor_fn, dist_hub + self.bowden_overshoot, self.feed_speed))
                 if not ok:
                     self.logger.error(f"ACE feed to hub sensor failed for {cur_lane.name}: {msg}")
                     return False
@@ -2476,9 +2517,9 @@ class afcACE(afcUnit):
                 # The tip is parked by the last unload (hub_clear_mm behind
                 # the sensor) or at the slot. The feed homes on the sensor
                 # either way; its position is never assumed.
-                ok, msg = self._approach_sensor(
+                ok, msg = self._home(slot, lambda: self._approach_sensor(
                     slot, sensor_fn, self.hub_clear_mm + self.sensor_approach_mm,
-                    bowden + dist_hub)
+                    bowden + dist_hub))
                 if not ok:
                     self.logger.error(
                         f"ACE feed to tool_start sensor failed for {cur_lane.name}: {msg}")
